@@ -1,5 +1,45 @@
 #!/bin/bash
 
+BUILD_DEPS="0"
+BUILD_BAMBU_STUDIO="0"
+BUILD_QUICK="0"
+
+usage () {
+    echo "Usage: ./build-macos.sh [-d][-s][-m]"
+    echo "  -d: build deps (optional)"
+    echo "  -s: build bambu-studio (optional)"
+    echo "  -q: quick - skip cmake prepare"
+    echo "For a first use, you want './build-macos.sh -ds'"
+    echo "   subsequent builds may use './build-macos.sh -sq'"
+}
+
+
+while getopts ":dsq" opt; do
+    case ${opt} in
+        d )
+            BUILD_DEPS="1"
+            ;;
+        s )
+            BUILD_BAMBU_STUDIO="1"
+            ;;
+        q )
+            BUILD_QUICK="1"
+            ;;
+        h ) usage
+            exit 0
+            ;;
+    esac
+done
+
+if [ $OPTIND -eq 1 ]
+then
+    usage
+    exit 1
+fi
+
+
+
+
 ./write_gitid_to_resources.sh
 
 ulimit -n 1024
@@ -19,6 +59,8 @@ then
 	ARCH="arm64"
 fi
 
+echo building for $ARCH
+
 
 build_deps () {
     mkdir -p "$DEPS_BUILD_DIR"
@@ -33,19 +75,31 @@ build_deps () {
     cd ..
 }
 
-build_slicer () {
+build_bambu_studio () {
     mkdir -p "$INSTALL_BUILD_DIR"
     cd "$INSTALL_BUILD_DIR"
 
     rm -r "$INSTALL_DIR/bin"
 
-    # cmake ../..  -DBBL_RELEASE_TO_PUBLIC=1 -DCMAKE_PREFIX_PATH="$DEPS_DEST_DIR/usr/local" -DCMAKE_INSTALL_PREFIX="../install_dir" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MACOSX_RPATH=ON -DCMAKE_INSTALL_RPATH="$DEPS_DEST_DIR/BambuStudio_dep/usr/local" -DCMAKE_MACOSX_BUNDLE=on
+    if [ $BUILD_QUICK != "1" ]
+    then
+        cmake ../..  -DBBL_RELEASE_TO_PUBLIC=1 -DCMAKE_PREFIX_PATH="$DEPS_DEST_DIR/usr/local" -DCMAKE_INSTALL_PREFIX="../install_dir" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MACOSX_RPATH=ON -DCMAKE_INSTALL_RPATH="$DEPS_DEST_DIR/BambuStudio_dep/usr/local" -DCMAKE_MACOSX_BUNDLE=on
+    fi
     
     cmake --build . --target install --config Release -j6
 }
 
-echo building for $ARCH
-build_deps
-build_slicer
+
+
+if [ $BUILD_DEPS == "1" ] 
+then      
+    build_deps
+fi
+
+if [ $BUILD_BAMBU_STUDIO == "1" ]
+then
+    build_bambu_studio
+fi
+
 
 
