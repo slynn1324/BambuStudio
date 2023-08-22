@@ -144,6 +144,8 @@ namespace GUI {
 
 class MainFrame;
 
+// SL - keep the url so we don't have to look it up from config each iteration.  This could move to the config class, but wanted to keep changes localized. 
+static std::string bambu_status_webhook_url;
 
 std::string VersionInfo::convert_full_version(std::string short_version)
 {
@@ -1977,6 +1979,9 @@ void GUI_App::init_networking_callbacks()
 
         m_agent->set_on_message_fn(message_arrive_fn);
 
+        // SL - init the bambu_status_webhook_url from the json config
+       bambu_status_webhook_url = app_config->get("bambu_status_webhook_url");
+
         auto lan_message_arrive_fn = [this](std::string dev_id, std::string msg) {
             if (m_is_closing) {
                 return;
@@ -1996,7 +2001,19 @@ void GUI_App::init_networking_callbacks()
                         GUI::wxGetApp().sidebar().load_ams_list(obj->dev_id, obj);
                     }
                 }
-                });
+
+                // SL: echo received mqtt message body as http post/webook
+                // considered mqtt here, but would need to add a mqtt library that isn't embedded in the
+                // closed-source bambu network libraries.  An HTTP Client is already present 
+                // as part of libslic3r/utils.  
+                if ( bambu_status_webhook_url.length() > 0 ){
+                    Slic3r::Http bambuStatusWebhookPost = Slic3r::Http::post(bambu_status_webhook_url);
+                    bambuStatusWebhookPost.header("dev_id", dev_id);
+                    bambuStatusWebhookPost.set_post_body(msg);
+                    bambuStatusWebhookPost.perform();
+                }
+    
+            });
         };
         m_agent->set_on_local_message_fn(lan_message_arrive_fn);
         m_agent->set_queue_on_main_fn([this](std::function<void()> callback) {
