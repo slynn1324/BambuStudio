@@ -11,6 +11,14 @@ DEPS_BUILD_DIR="$BASEPATH/deps/build"
 DEPS_DEST_DIR="$BASEPATH/build/BambuStudio_dep"
 INSTALL_DIR="$BASEPATH/build/install_dir"
 INSTALL_BUILD_DIR="$BASEPATH/build/build"
+ARCH="x86_64"
+
+uname_p=$(uname -p)
+if [ $uname_p == "arm" ]
+then
+	ARCH="arm64"
+fi
+
 
 build_deps () {
     mkdir -p "$DEPS_BUILD_DIR"
@@ -18,7 +26,7 @@ build_deps () {
 
 
     cd "$DEPS_BUILD_DIR"
-    cmake ../ -DDESTDIR="$DEPS_DEST_DIR" -DOPENSSL_ARCH="darwin64-x86_64-cc"
+    cmake ../ -DDESTDIR="$DEPS_DEST_DIR" -DOPENSSL_ARCH="darwin64-${ARCH}-cc"
 
     make -j6
 
@@ -36,5 +44,8 @@ build_slicer () {
     cmake --build . --target install --config Release -j6
 }
 
+echo building for $ARCH
 build_deps
 build_slicer
+
+
