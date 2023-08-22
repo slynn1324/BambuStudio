@@ -9,12 +9,13 @@ usage () {
     echo "  -d: build deps (optional)"
     echo "  -s: build bambu-studio (optional)"
     echo "  -q: quick - skip cmake prepare"
+    echo "  -h: help - display this message"
     echo "For a first use, you want './build-macos.sh -ds'"
     echo "   subsequent builds may use './build-macos.sh -sq'"
 }
 
 
-while getopts ":dsq" opt; do
+while getopts ":dsqh" opt; do
     case ${opt} in
         d )
             BUILD_DEPS="1"
