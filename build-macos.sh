@@ -36,4 +36,5 @@ build_slicer () {
     cmake --build . --target install --config Release -j6
 }
 
+build_deps
 build_slicer
