@@ -52,4 +52,6 @@ The ultimate goal is to enable reliable HomeAssistant integration for remote mon
 A simple sample implementation of a webhook receiver that bridges to a MQTT broker is available at https://www.github.com/slynn1324/bambu-bridge.  
 
 
+## about page
 
+Added some tweaks to the build scripts to write out a gitid.txt file into the resources directory, and updated the AboutDialog to read in and include the value to identify custom builds.
