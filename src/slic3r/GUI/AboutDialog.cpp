@@ -265,6 +265,26 @@ AboutDialog::AboutDialog()
         build_time_text->SetBackgroundColour(wxColour("#00AF42"));
         vesizer->Add(build_time_text, 0, wxALL | wxALIGN_CENTER_HORIZONTAL, FromDIP(5));
 #endif
+        
+        // SL: read gitid.txt file from resources dir
+        // took this approach to prevent changing too many code points and preserve faster compile without re-running cmake each time.
+        {
+            std::string gitid;
+            std::string gitid_path = Slic3r::resources_dir() + "/gitid.txt";
+            std::ifstream gitid_file;
+            gitid_file.open(gitid_path);
+            gitid_file >> gitid;
+            gitid_file.close();
+            boost::algorithm::trim(gitid);
+            if ( !gitid.empty() ){       
+                wxString wx_gitid = wxString::Format("git id: %s", std::string(gitid));
+                wxStaticText* wx_gitid_text = new wxStaticText(this, wxID_ANY, wx_gitid, wxDefaultPosition, wxDefaultSize);
+                wx_gitid_text->SetForegroundColour(wxColour("#FFFFFE"));
+                wx_gitid_text->SetBackgroundColour(wxColour("#00AF42"));
+                vesizer->Add(wx_gitid_text, 0, wxALL | wxALIGN_CENTER_HORIZONTAL, FromDIP(5));
+            }
+        }
+
         vesizer->Add(0, 0, 1, wxEXPAND, FromDIP(5));
     }
 

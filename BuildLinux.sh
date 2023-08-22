@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e # exit on first error
 
+# SL write gitid 
+./write_gitid_to_resources.sh
+
 export ROOT=`pwd`
 export NCORES=`nproc --all`
 export CMAKE_BUILD_PARALLEL_LEVEL=${NCORES}
