@@ -1,3 +1,7 @@
+# BambuStudio SL Fork
+
+See [CHANGES.md](CHANGES.md)
+
 ![image](https://user-images.githubusercontent.com/106916061/179006347-497d24c0-9bd6-45b7-8c49-d5cc8ecfe5d7.png)
 # Work with us!
 If you are interested in working with us in China, please apply to our open positions below by simply sending your resume to our mailbox [zhaopin at bambulab.com].
