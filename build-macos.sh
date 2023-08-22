@@ -3,9 +3,10 @@
 BUILD_DEPS="0"
 BUILD_BAMBU_STUDIO="0"
 BUILD_QUICK="0"
+PACKAGE_APP="0"
 
 usage () {
-    echo "Usage: ./build-macos.sh [-d][-s][-m]"
+    echo "Usage: ./build-macos.sh [-d][-s][-m][-p][-h]"
     echo "  -d: build deps (optional)"
     echo "  -s: build bambu-studio (optional)"
     echo "  -q: quick - skip cmake prepare"
@@ -15,7 +16,7 @@ usage () {
 }
 
 
-while getopts ":dsqh" opt; do
+while getopts ":dsqph" opt; do
     case ${opt} in
         d )
             BUILD_DEPS="1"
@@ -25,6 +26,9 @@ while getopts ":dsqh" opt; do
             ;;
         q )
             BUILD_QUICK="1"
+            ;;
+        p )
+            PACKAGE_APP="1"
             ;;
         h ) usage
             exit 0
@@ -52,6 +56,7 @@ DEPS_BUILD_DIR="$BASEPATH/deps/build"
 DEPS_DEST_DIR="$BASEPATH/build/BambuStudio_dep"
 INSTALL_DIR="$BASEPATH/build/install_dir"
 INSTALL_BUILD_DIR="$BASEPATH/build/build"
+PACKAGE_APP_DIR="$BASEPATH/build/dist"
 ARCH="x86_64"
 
 uname_p=$(uname -p)
@@ -90,6 +95,12 @@ build_bambu_studio () {
     cmake --build . --target install --config Release -j6
 }
 
+package_app () {
+    mkdir -p "$PACKAGE_APP_DIR"
+    cp -R "$INSTALL_DIR/bin/BambuStudio.app" "$PACKAGE_APP_DIR"
+    rm "$PACKAGE_APP_DIR/BambuStudio.app/Contents/Resources"
+    cp -R "$BASEPATH/resources" "$PACKAGE_APP_DIR/BambuStudio.app/Contents/Resources"
+}
 
 
 if [ $BUILD_DEPS == "1" ] 
@@ -103,4 +114,7 @@ then
 fi
 
 
-
+if [ $PACKAGE_APP == "1" ]
+then
+    package_app
+fi
