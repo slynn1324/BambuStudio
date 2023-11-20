@@ -24,6 +24,7 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PrintBase.hpp"
 #include "libslic3r/Calib.hpp"
+#include "libslic3r/FlushVolCalc.hpp"
 
 #define FILAMENT_SYSTEM_COLORS_NUM      16
 
@@ -69,6 +70,7 @@ class ObjectList;
 class GLCanvas3D;
 class Mouse3DController;
 class NotificationManager;
+class DailyTipsWindow;
 struct Camera;
 class GLToolbar;
 class PlaterPresetComboBox;
@@ -85,6 +87,7 @@ enum class ActionButtonType : int;
 //BBS: add EVT_SLICING_UPDATE declare here
 wxDECLARE_EVENT(EVT_SLICING_UPDATE, Slic3r::SlicingStatusEvent);
 wxDECLARE_EVENT(EVT_PUBLISH,        wxCommandEvent);
+wxDECLARE_EVENT(EVT_OPEN_PLATESETTINGSDIALOG,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_REPAIR_MODEL,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_FILAMENT_COLOR_CHANGED,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_INSTALL_PLUGIN_NETWORKING,        wxCommandEvent);
@@ -93,7 +96,8 @@ wxDECLARE_EVENT(EVT_UPDATE_PLUGINS_WHEN_LAUNCH,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_PREVIEW_ONLY_MODE_HINT,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_GLCANVAS_COLOR_MODE_CHANGED,   SimpleEvent);
 wxDECLARE_EVENT(EVT_PRINT_FROM_SDCARD_VIEW,   SimpleEvent);
-
+wxDECLARE_EVENT(EVT_CREATE_FILAMENT, SimpleEvent);
+wxDECLARE_EVENT(EVT_MODIFY_FILAMENT, SimpleEvent);
 
 const wxString DEFAULT_PROJECT_NAME = "Untitled";
 
@@ -108,6 +112,7 @@ public:
     Sidebar &operator=(const Sidebar &) = delete;
     ~Sidebar();
 
+    void create_printer_preset();
     void init_filament_combo(PlaterPresetComboBox **combo, const int filament_idx);
     void remove_unused_filament_combos(const size_t current_extruder_count);
     void update_all_preset_comboboxes();
@@ -157,7 +162,7 @@ public:
     void                    update_ui_from_settings();
 	bool                    show_object_list(bool show) const;
     void                    finish_param_edit();
-
+    void                    auto_calc_flushing_volumes(const int modify_id);
 #ifdef _MSW_DARK_MODE
     void                    show_mode_sizer(bool show);
 #endif
@@ -255,9 +260,7 @@ public:
     void update_all_plate_thumbnails(bool force_update = false);
     void invalid_all_plate_thumbnails();
     void force_update_all_plate_thumbnails();
-    //BBS static functions that update extruder params and speed table
-    static void setPrintSpeedTable(Slic3r::GlobalSpeedMap& printSpeedMap);
-    static void setExtruderParams(std::map<size_t, Slic3r::ExtruderParams>& extParas);
+
     static wxColour get_next_color_for_filament();
     static wxString get_slice_warning_string(GCodeProcessorResult::SliceWarning& warning);
 
@@ -270,7 +273,7 @@ public:
 
     const wxString& get_last_loaded_gcode() const { return m_last_loaded_gcode; }
 
-    void update(bool conside_update_flag = false);
+    void update(bool conside_update_flag = false, bool force_background_processing_update = false);
     //BBS
     void object_list_changed();
     void stop_jobs();
@@ -288,7 +291,7 @@ public:
 
     bool is_view3D_overhang_shown() const;
     void show_view3D_overhang(bool show);
-    
+
     bool is_sidebar_collapsed() const;
     void collapse_sidebar(bool show);
 
@@ -326,7 +329,8 @@ public:
 
     // BBS: segment model with CGAL
     void segment(size_t obj_idx, size_t instance_idx, double smoothing_alpha=0.5, int segment_number=5);
-    void merge(size_t obj_idx, std::vector<int>& vol_indeces);
+    void apply_cut_object_to_model(size_t obj_idx, const ModelObjectPtrs &cut_objects);
+    void merge(size_t obj_idx, std::vector<int> &vol_indeces);
 
     void send_to_printer(bool isall = false);
     void export_gcode(bool prefer_removable);
@@ -334,7 +338,7 @@ public:
     void send_gcode_finish(wxString name);
     void export_core_3mf();
     static TriangleMesh combine_mesh_fff(const ModelObject& mo, int instance_id, std::function<void(const std::string&)> notify_func = {});
-    void export_stl(bool extended = false, bool selection_only = false);
+    void export_stl(bool extended = false, bool selection_only = false, bool multi_stls = false);
     //BBS: remove amf
     //void export_amf();
     //BBS add extra param for exporting 3mf silence
@@ -373,6 +377,7 @@ public:
     void print_job_finished(wxCommandEvent &evt);
     void send_job_finished(wxCommandEvent& evt);
     void publish_job_finished(wxCommandEvent& evt);
+    void open_platesettings_dialog(wxCommandEvent& evt);
     void on_change_color_mode(SimpleEvent& evt);
 	void eject_drive();
 
@@ -581,6 +586,7 @@ public:
 
 	const NotificationManager* get_notification_manager() const;
 	NotificationManager* get_notification_manager();
+    DailyTipsWindow* get_dailytips() const;
     //BBS: show message in status bar
     void show_status_message(std::string s);
 
@@ -735,6 +741,10 @@ private:
     void single_snapshots_leave(SingleSnapshot *single);
     // BBS: add project slice related functions
     int start_next_slice();
+
+    void _calib_pa_pattern(const Calib_Params &params);
+    void _calib_pa_tower(const Calib_Params &params);
+    void _calib_pa_select_added_objects();
 
     friend class SuppressBackgroundProcessingUpdate;
 };

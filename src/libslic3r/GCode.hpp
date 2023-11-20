@@ -91,6 +91,7 @@ public:
     std::string prime(GCode &gcodegen);
     void next_layer() { ++ m_layer_idx; m_tool_change_idx = 0; }
     std::string tool_change(GCode &gcodegen, int extruder_id, bool finish_layer);
+    bool is_empty_wipe_tower_gcode(GCode &gcodegen, int extruder_id, bool finish_layer);
     std::string finalize(GCode &gcodegen);
     std::vector<float> used_filament_length() const;
 
@@ -207,6 +208,8 @@ public:
     std::string unretract() { return m_writer.unlift() + m_writer.unretract(); }
     //BBS
     bool is_BBL_Printer();
+
+    BoundingBoxf first_layer_projection(const Print& print) const;
 
     // Object and support extrusions of the same PrintObject at the same print_z.
     // public, so that it could be accessed by free helper functions from GCode.cpp
@@ -411,7 +414,7 @@ private:
     // BBS
     LiftType to_lift_type(ZHopType z_hop_types);
 
-    std::string     set_extruder(unsigned int extruder_id, double print_z);
+    std::string     set_extruder(unsigned int extruder_id, double print_z, bool by_object=false);
     std::set<ObjectID>              m_objsWithBrim; // indicates the objs with brim
     std::set<ObjectID>              m_objSupportsWithBrim; // indicates the objs' supports with brim
     // Cache for custom seam enforcers/blockers for each layer.
@@ -490,6 +493,9 @@ private:
     std::vector<size_t> m_label_objects_ids;
     std::string _encode_label_ids_to_base64(std::vector<size_t> ids);
 
+    int m_timelapse_warning_code = 0;
+    bool m_support_traditional_timelapse = true;
+
     bool m_silent_time_estimator_enabled;
 
     // Processor
@@ -502,6 +508,7 @@ private:
     bool m_need_change_layer_lift_z = false;
     int m_start_gcode_filament = -1;
 
+    std::set<unsigned int>                  m_initial_layer_extruders;
     // BBS
     int get_bed_temperature(const int extruder_id, const bool is_first_layer, const BedType bed_type) const;
 

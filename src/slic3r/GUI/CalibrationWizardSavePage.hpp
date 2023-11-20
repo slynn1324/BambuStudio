@@ -74,6 +74,7 @@ public:
     void get_value(double& value);
     void get_save_name(std::string& name);
     void set_save_name(const std::string& name);
+    void msw_rescale();
 };
 
 
@@ -119,6 +120,7 @@ public:
         long style = wxTAB_TRAVERSAL);
     void create_panel(wxWindow* parent);
     void set_save_img();
+    void set_pa_cali_method(ManualPaCaliMethod method);
 
     void set_machine_obj(MachineObject* obj) { m_obj = obj; }
 
@@ -128,8 +130,11 @@ public:
 
     virtual bool Show(bool show = true) override;
 
+    void msw_rescale();
+
 protected:
     wxBoxSizer* m_top_sizer;
+    Label *          m_complete_text;
     CaliPagePicture* m_picture_panel;
     ::TextInput* m_save_name_input;
     ::TextInput* m_k_val;
@@ -149,11 +154,17 @@ public:
         long style = wxTAB_TRAVERSAL);
     void create_panel(wxWindow* parent);
     void set_save_img();
+    void set_pa_cali_method(ManualPaCaliMethod method);
 
     bool get_result(float* out_k, float* out_n);
 
+    virtual bool Show(bool show = true) override;
+
+    void msw_rescale();
+
 protected:
     wxBoxSizer* m_top_sizer;
+    Label *          m_complete_text;
     CaliPagePicture* m_picture_panel;
     ::TextInput* m_k_val;
     ::TextInput* m_n_val;
@@ -181,12 +192,14 @@ public:
 
     virtual bool Show(bool show = true) override;
 
+    void msw_rescale() override;
+
 protected:
     CaliPageStepGuide*  m_step_panel { nullptr };
     CaliPASaveAutoPanel*  m_auto_panel { nullptr };
     CaliPASaveManualPanel* m_manual_panel { nullptr };
     CaliPASaveP1PPanel* m_p1p_panel{ nullptr };
-    PAPageHelpPanel* m_help_panel;
+    PAPageHelpPanel* m_help_panel{ nullptr };
 
     CaliSaveStyle m_save_style;
 };
@@ -205,6 +218,8 @@ public:
     bool is_all_failed() { return m_is_all_failed; }
 
     virtual bool Show(bool show = true) override;
+    
+    void msw_rescale() override;
 
 protected:
     CaliPageStepGuide* m_step_panel{ nullptr };
@@ -223,7 +238,7 @@ public:
     void create_page(wxWindow* parent);
     void set_save_img();
 
-    void set_default_name(const wxString& name);
+    void set_default_options(const wxString &name);
 
     bool is_skip_fine_calibration();
 
@@ -233,15 +248,34 @@ public:
 
     virtual bool Show(bool show = true) override;
 
+    void update_print_error_info(int code, const std::string& msg, const std::string& extra) { m_sending_panel->update_print_error_info(code, msg, extra); }
+
+    void on_cali_start_job();
+
+    void on_cali_finished_job();
+
+    void on_cali_cancel_job();
+
+    std::shared_ptr<ProgressIndicator> get_sending_progress_bar() {
+        return m_sending_panel->get_sending_progress_bar();
+    }
+
+    void msw_rescale() override;
+
 protected:
     CaliPageStepGuide* m_step_panel{ nullptr };
     CaliPagePicture*   m_picture_panel;
     ComboBox*          m_optimal_block_coarse;
     TextInput*         m_save_name_input;
 
+    Label* m_coarse_calc_result_text;
+    CheckBox* m_checkBox_skip_calibration;
+
     bool m_skip_fine_calibration = false;
     float m_curr_flow_ratio;
     float m_coarse_flow_ratio;
+
+    CaliPageSendingPanel* m_sending_panel{ nullptr };
 };
 
 class CalibrationFlowFineSavePage : public CalibrationCommonSavePage
@@ -252,7 +286,7 @@ public:
     void create_page(wxWindow* parent);
     void set_save_img();
 
-    void set_default_name(const wxString& name);
+    void set_default_options(const wxString &name);
 
     void set_curr_flow_ratio(float value);
 
@@ -260,11 +294,15 @@ public:
 
     virtual bool Show(bool show = true) override;
 
+    void msw_rescale() override;
+
 protected:
     CaliPageStepGuide* m_step_panel{ nullptr };
     CaliPagePicture*   m_picture_panel;
     ComboBox*          m_optimal_block_fine;
     TextInput*         m_save_name_input;
+
+    Label* m_fine_calc_result_text;
 
     float m_curr_flow_ratio;
     float m_fine_flow_ratio;

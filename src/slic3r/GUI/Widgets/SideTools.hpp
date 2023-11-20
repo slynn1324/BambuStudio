@@ -22,6 +22,7 @@ enum WifiSignal {
     WEAK,
     MIDDLE,
     STRONG,
+    WIRED,
 };
 
 enum MonitorStatus {
@@ -58,6 +59,7 @@ private:
     ScalableBitmap  m_wifi_weak_img;
     ScalableBitmap  m_wifi_middle_img;
     ScalableBitmap  m_wifi_strong_img;
+    ScalableBitmap  m_network_wired_img;
 
 protected:
     wxStaticBitmap *m_bitmap_info;
@@ -96,8 +98,8 @@ public:
 
 private:
     SideToolsPanel* m_side_tools{ nullptr };
-    Tabbook*		m_tabpanel{ nullptr };
-    Label* m_link_network_state{ nullptr };
+    Tabbook*        m_tabpanel{ nullptr };
+    wxHyperlinkCtrl* m_link_network_state{ nullptr };
     Label* m_st_txt_error_code{ nullptr };
     Label* m_st_txt_error_desc{ nullptr };
     Label* m_st_txt_extra_info{ nullptr };

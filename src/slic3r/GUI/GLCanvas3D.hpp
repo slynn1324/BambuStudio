@@ -473,7 +473,7 @@ public:
 
     struct ArrangeSettings
     {
-        float distance           = 5.;
+        float distance           = 0.f;
 //        float distance_sla       = 6.;
         float accuracy           = 0.65f; // Unused currently
         bool  enable_rotation    = false;
@@ -481,8 +481,7 @@ public:
         bool  avoid_extrusion_cali_region = true;
         //BBS: add more arrangeSettings
         bool is_seq_print        = false;
-        float bed_shrink_x       = 0.f;
-        float bed_shrink_y       = 0.f;
+        bool  align_to_y_axis    = false;
     };
 
     struct OrientSettings
@@ -626,7 +625,6 @@ private:
         return *ptr;
     }
 
-    ArrangeSettings &get_arrange_settings() { return get_arrange_settings(this); }
 
 
     //BBS:record key botton frequency
@@ -652,6 +650,7 @@ public:
     }
 
     void load_arrange_settings();
+    ArrangeSettings& get_arrange_settings() { return get_arrange_settings(this); }
 
     class SequentialPrintClearance
     {
@@ -876,6 +875,7 @@ public:
 
     //BBS
     void select_curr_plate_all();
+    void select_object_from_idx(std::vector<int>& object_idxs);
     void remove_curr_plate_all();
     void update_plate_thumbnails();
 
@@ -941,6 +941,7 @@ public:
     void do_scale(const std::string& snapshot_type);
     void do_flatten(const Vec3d& normal, const std::string& snapshot_type);
     void do_center();
+    void do_center_plate(const int plate_idx);
     void do_mirror(const std::string& snapshot_type);
 
     void update_gizmos_on_off_state();
@@ -1081,9 +1082,6 @@ public:
     Vec3d _mouse_to_3d(const Point& mouse_pos, float* z = nullptr);
 
     bool make_current_for_postinit();
-
-    //BBS
-    Points estimate_wipe_tower_points(int plate_index, bool global = true) const;
 
 private:
     bool _is_shown_on_screen() const;

@@ -215,7 +215,8 @@ private:
     std::vector<MachinePanel*>        m_user_list_machine_panel;
     std::vector<MachinePanel*>        m_other_list_machine_panel;
     boost::thread*                    get_print_info_thread{ nullptr };
-    std::string                       m_print_info;
+    std::shared_ptr<int>              m_token = std::make_shared<int>(0);
+    std::string                       m_print_info = "";
     bool                              m_dismiss { false };
 
     std::map<std::string, MachineObject*> m_bind_machine_list; 
@@ -272,7 +273,8 @@ enum PrintDialogStatus {
     PrintStatusNotSupportedSendToSDCard,
     PrintStatusNotSupportedPrintAll,
     PrintStatusBlankPlate,
-    PrintStatusUnsupportedPrinter
+    PrintStatusUnsupportedPrinter,
+    PrintStatusTimelapseWarning
 };
 
 std::string get_print_status_info(PrintDialogStatus status);
@@ -303,6 +305,7 @@ private:
     wxColour                            m_colour_bold_color{wxColour(38, 46, 48)};
     StateColor                          m_btn_bg_enable;
     
+    std::shared_ptr<int>                m_token = std::make_shared<int>(0);
     std::map<std::string, CheckBox *>   m_checkbox_list;
     //std::map<std::string, bool>         m_checkbox_state_list;
     std::vector<wxString>               m_bedtype_list;
@@ -340,6 +343,7 @@ protected:
     wxStaticBitmap*                     m_staticbitmap{ nullptr };
     wxStaticBitmap*                     m_bitmap_last_plate{ nullptr };
     wxStaticBitmap*                     m_bitmap_next_plate{ nullptr };
+    wxStaticBitmap*                     img_amsmapping_tip{nullptr};
     ThumbnailPanel*                     m_thumbnailPanel{ nullptr };
     wxWindow*                           select_bed{ nullptr };
     wxWindow*                           select_flow{ nullptr };
@@ -358,8 +362,8 @@ protected:
     Label*                              m_st_txt_error_code{nullptr};
     Label*                              m_st_txt_error_desc{nullptr};
     Label*                              m_st_txt_extra_info{nullptr};
-    Label *                             m_link_network_state;
     Label*                              m_ams_backup_tip{nullptr};
+    wxHyperlinkCtrl*                    m_link_network_state{ nullptr };
     wxSimplebook*                       m_rename_switch_panel{nullptr};
     wxSimplebook*                       m_simplebook{nullptr};
     wxStaticText*                       m_rename_text{nullptr};
@@ -383,9 +387,8 @@ protected:
     ScalableBitmap *                    print_time{nullptr};
     wxStaticBitmap *                    weightimg{nullptr};
     ScalableBitmap *                    print_weight{nullptr};
-    wxStaticBitmap *                    amsmapping_tip{nullptr};
     ScalableBitmap *                    enable_ams_mapping{nullptr};
-    wxStaticBitmap *                    ams_tip{nullptr};
+    wxStaticBitmap *                    img_use_ams_tip{nullptr};
     wxStaticBitmap *                    img_ams_backup{nullptr};
     ScalableBitmap *                    enable_ams{nullptr};
 
@@ -400,7 +403,7 @@ public:
     void check_fcous_state(wxWindow* window);
     void popup_filament_backup();
     void update_select_layout(MachineObject *obj);
-    void prepare_mode();
+    void prepare_mode(bool refresh_button = true);
     void sending_mode();
     void finish_mode();
 	void sync_ams_mapping_result(std::vector<FilamentInfo>& result);
@@ -431,6 +434,7 @@ public:
     void update_page_turn_state(bool show);
     void on_timer(wxTimerEvent& event);
     void on_selection_changed(wxCommandEvent& event);
+    void update_flow_cali_check(MachineObject* obj);
     void Enable_Refresh_Button(bool en);
     void Enable_Send_Button(bool en);
     void on_dpi_changed(const wxRect& suggested_rect) override;
@@ -441,10 +445,14 @@ public:
     void update_priner_status_msg(wxString msg, bool is_warning = false);
     void update_print_status_msg(wxString msg, bool is_warning = false, bool is_printer = true);
     void update_print_error_info(int code, std::string msg, std::string extra);
-    void set_flow_calibration_state(bool state);
+    void set_flow_calibration_state(bool state, bool show_tips = true);
     bool is_show_timelapse();
+    bool has_timelapse_warning();
+    void update_timelapse_enable_status();
     bool is_same_printer_model();
     bool is_blocking_printing();
+    bool is_same_nozzle_diameters(std::string& nozzle_type, std::string& nozzle_diameter);
+    bool is_same_nozzle_type(std::string& filament_type);
     bool has_tips(MachineObject* obj);
     bool is_timeout();
     int  update_print_required_data(Slic3r::DynamicPrintConfig config, Slic3r::Model model, Slic3r::PlateDataPtrs plate_data_list, std::string file_name, std::string file_path);
@@ -454,6 +462,7 @@ public:
     bool get_ams_mapping_result(std::string& mapping_array_str, std::string& ams_mapping_info);
 
     PrintFromType get_print_type() {return m_print_type;};
+    wxString    format_steel_name(std::string name);
     wxString    format_text(wxString &m_msg);
     wxWindow*   create_ams_checkbox(wxString title, wxWindow* parent, wxString tooltip);
     wxWindow*   create_item_checkbox(wxString title, wxWindow* parent, wxString tooltip, std::string param);

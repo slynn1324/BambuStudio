@@ -27,6 +27,7 @@ set(lisbslic3r_sources
     AABBMesh.hpp
     AABBMesh.cpp
     AnyPtr.hpp
+    AStar.hpp
     BoundingBox.cpp
     BoundingBox.hpp
     BridgeDetector.cpp
@@ -51,6 +52,8 @@ set(lisbslic3r_sources
     Config.hpp
     CurveAnalyzer.cpp
     CurveAnalyzer.hpp
+    CutUtils.cpp
+    CutUtils.hpp
     EdgeGrid.cpp
     EdgeGrid.hpp
     ElephantFootCompensation.cpp
@@ -175,6 +178,8 @@ set(lisbslic3r_sources
     Int128.hpp
     InternalBridgeDetector.cpp
     InternalBridgeDetector.hpp
+    JumpPointSearch.hpp
+    JumpPointSearch.cpp
     KDTreeIndirect.hpp
     Layer.cpp
     Layer.hpp
@@ -260,10 +265,15 @@ set(lisbslic3r_sources
     SlicesToTriangleMesh.cpp
     SlicingAdaptive.cpp
     SlicingAdaptive.hpp
-    SupportMaterial.cpp
-    SupportMaterial.hpp
-    TreeSupport.hpp
-    TreeSupport.cpp
+    Support/SupportMaterial.cpp
+    Support/SupportMaterial.hpp
+    Support/TreeSupport.hpp
+    Support/TreeSupport.cpp
+    Support/TreeSupport3D.hpp
+    Support/TreeSupport3D.cpp
+    Support/TreeModelVolumes.hpp
+    Support/TreeModelVolumes.cpp
+    Support/TreeSupportCommon.hpp
     MinimumSpanningTree.hpp
     MinimumSpanningTree.cpp
     Surface.cpp
@@ -390,6 +400,8 @@ set(lisbslic3r_sources
 if (APPLE)
     list(APPEND lisbslic3r_sources
 			MacUtils.mm
+            Format/ModelIO.hpp
+            Format/ModelIO.mm
         )
 endif ()
 
@@ -489,6 +501,7 @@ target_link_libraries(libslic3r
     qhull
     semver
     TBB::tbb
+    TBB::tbbmalloc
     libslic3r_cgal
     ${CMAKE_DL_LIBS}
     PNG::PNG
@@ -504,6 +517,12 @@ if(NOT WIN32)
         target_link_libraries(libslic3r fontconfig)
     endif()
 endif()
+
+if (APPLE)
+    find_library(FOUNDATION Foundation REQUIRED)
+    find_library(MODELIO ModelIO REQUIRED)
+    target_link_libraries(libslic3r ${FOUNDATION} ${MODELIO})
+endif ()
 
 if (TARGET OpenVDB::openvdb)
     target_link_libraries(libslic3r OpenVDB::openvdb)

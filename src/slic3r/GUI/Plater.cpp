@@ -37,6 +37,7 @@
 #include <wx/popupwin.h>
 #endif
 #include <wx/clrpicker.h>
+#include <wx/tokenzr.h>
 
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Format/STL.hpp"
@@ -133,6 +134,8 @@
 #include "PhysicalPrinterDialog.hpp"
 #include "PrintHostDialogs.hpp"
 #include "PlateSettingsDialog.hpp"
+#include "DailyTips.hpp"
+#include "CreatePresetsDialog.hpp"
 
 using boost::optional;
 namespace fs = boost::filesystem;
@@ -155,6 +158,7 @@ wxDEFINE_EVENT(EVT_EXPORT_FINISHED,                 wxCommandEvent);
 wxDEFINE_EVENT(EVT_IMPORT_MODEL_ID,                 wxCommandEvent);
 wxDEFINE_EVENT(EVT_DOWNLOAD_PROJECT,                wxCommandEvent);
 wxDEFINE_EVENT(EVT_PUBLISH,                         wxCommandEvent);
+wxDEFINE_EVENT(EVT_OPEN_PLATESETTINGSDIALOG,        wxCommandEvent);
 // BBS: backup & restore
 wxDEFINE_EVENT(EVT_RESTORE_PROJECT,                 wxCommandEvent);
 wxDEFINE_EVENT(EVT_PRINT_FINISHED,                  wxCommandEvent);
@@ -170,8 +174,12 @@ wxDEFINE_EVENT(EVT_INSTALL_PLUGIN_HINT,             wxCommandEvent);
 wxDEFINE_EVENT(EVT_PREVIEW_ONLY_MODE_HINT,          wxCommandEvent);
 //BBS: change light/dark mode
 wxDEFINE_EVENT(EVT_GLCANVAS_COLOR_MODE_CHANGED,     SimpleEvent);
-//BBS: print 
+//BBS: print
 wxDEFINE_EVENT(EVT_PRINT_FROM_SDCARD_VIEW,          SimpleEvent);
+
+wxDEFINE_EVENT(EVT_CREATE_FILAMENT, SimpleEvent);
+
+wxDEFINE_EVENT(EVT_MODIFY_FILAMENT, SimpleEvent);
 
 
 bool Plater::has_illegal_filename_characters(const wxString& wxs_name)
@@ -322,6 +330,7 @@ struct Sidebar::priv
     wxPanel* m_panel_project_title;
     ScalableButton* m_filament_icon = nullptr;
     Button * m_flushing_volume_btn = nullptr;
+    wxSearchCtrl* m_search_bar = nullptr;
 
     // BBS printer config
     StaticBox* m_panel_printer_title = nullptr;
@@ -348,7 +357,9 @@ struct Sidebar::priv
     ~priv();
 
     void show_preset_comboboxes();
-
+    void on_search_enter();
+    void on_search_update();
+    void on_kill_focus();
 #ifdef _WIN32
     wxString btn_reslice_tip;
     void show_rich_tip(const wxString& tooltip, wxButton* btn);
@@ -386,6 +397,23 @@ void Sidebar::priv::show_preset_comboboxes()
 
     scrolled->GetParent()->Layout();
     scrolled->Refresh();
+}
+
+void  Sidebar::priv::on_search_enter() {
+
+    m_object_list->search_object_list();
+
+}
+
+void Sidebar::priv::on_search_update() {
+
+    wxString search_text = m_search_bar->GetValue();
+    m_object_list->set_found_list(search_text);
+
+}
+
+void Sidebar::priv::on_kill_focus() {
+    m_object_list->searchbar_kill_focus();
 }
 
 #ifdef _WIN32
@@ -768,6 +796,7 @@ Sidebar::Sidebar(Plater *parent)
                 wxPostEvent(parent, SimpleEvent(EVT_SCHEDULE_BACKGROUND_PROCESS, parent));
             }
         }));
+
     bSizer39->Add(p->m_flushing_volume_btn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(5));
     bSizer39->Hide(p->m_flushing_volume_btn);
     bSizer39->Add(FromDIP(10), 0, 0, 0, 0 );
@@ -786,6 +815,7 @@ Sidebar::Sidebar(Plater *parent)
         wxGetApp().plater()->on_filaments_change(filament_count);
         wxGetApp().get_tab(Preset::TYPE_PRINT)->update();
         wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
+        auto_calc_flushing_volumes(filament_count - 1);
     });
     p->m_bpButton_add_filament = add_btn;
 
@@ -910,11 +940,30 @@ Sidebar::Sidebar(Plater *parent)
 
     //add project content
     p->sizer_params = new wxBoxSizer(wxVERTICAL);
+
+    p->m_search_bar = new wxSearchCtrl(p->scrolled, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_PROCESS_ENTER);
+    p->m_search_bar->ShowSearchButton(true);
+    p->m_search_bar->ShowCancelButton(true);
+    p->m_search_bar->SetDescriptiveText(_L("Search plate, object and part."));
+    p->m_search_bar->Bind(wxEVT_SET_FOCUS, [this](wxFocusEvent&) {
+        this->p->on_search_update();});
+    p->m_search_bar->Bind(wxEVT_COMMAND_TEXT_UPDATED, [this](wxCommandEvent&) {
+        this->p->m_object_list->set_cur_pos(0);
+        this->p->on_search_update();
+        });
+    p->m_search_bar->Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent& e) {
+        this->p->on_kill_focus();
+        e.Skip();
+        });
+    p->m_search_bar->Bind(wxEVT_SEARCH, [this](wxCommandEvent&) {this->p->on_search_enter();});
+
     p->m_object_list = new ObjectList(p->scrolled);
+
+    p->sizer_params->Add(p->m_search_bar, 0, wxALL | wxEXPAND, 0);
     p->sizer_params->Add(p->m_object_list, 1, wxEXPAND | wxTOP, 0);
     scrolled_sizer->Add(p->sizer_params, 2, wxEXPAND | wxLEFT, 0);
     p->m_object_list->Hide();
-
+    p->m_search_bar->Hide();
     // Frequently Object Settings
     p->object_settings = new ObjectSettings(p->scrolled);
 #if !NEW_OBJECT_SETTING
@@ -939,7 +988,26 @@ Sidebar::Sidebar(Plater *parent)
 
 Sidebar::~Sidebar() {}
 
-void Sidebar::init_filament_combo(PlaterPresetComboBox **combo, const int filament_idx) {
+void Sidebar::create_printer_preset()
+{
+    CreatePrinterPresetDialog dlg(wxGetApp().mainframe);
+    int                       res = dlg.ShowModal();
+    if (wxID_OK == res) {
+        wxGetApp().mainframe->update_side_preset_ui();
+        update_ui_from_settings();
+        update_all_preset_comboboxes();
+        wxGetApp().load_current_presets();
+        CreatePresetSuccessfulDialog success_dlg(wxGetApp().mainframe, SuccessType::PRINTER);
+        int                          res = success_dlg.ShowModal();
+        if (res == wxID_OK) {
+            p->editing_filament = -1;
+            if (p->combo_printer->switch_to_tab()) p->editing_filament = 0;
+        }
+    }
+}
+
+void Sidebar::init_filament_combo(PlaterPresetComboBox **combo, const int filament_idx)
+{
     *combo = new PlaterPresetComboBox(p->m_panel_filament_content, Slic3r::Preset::TYPE_FILAMENT);
     (*combo)->set_filament_idx(filament_idx);
 
@@ -1065,7 +1133,7 @@ void Sidebar::update_all_preset_comboboxes()
             ;
         }
 
-        if(!url.empty()) 
+        if(!url.empty())
         {
             if(!url.Lower().starts_with("http"))
                 url = wxString::Format("http://%s",url);
@@ -1154,8 +1222,17 @@ void Sidebar::update_presets(Preset::Type preset_type)
             printer_tab->update();
         }
 
-        bool isBBL = wxGetApp().preset_bundle->printers.get_edited_preset().is_bbl_vendor_preset(wxGetApp().preset_bundle);
+        Preset& printer_preset = wxGetApp().preset_bundle->printers.get_edited_preset();
+
+        bool isBBL = printer_preset.is_bbl_vendor_preset(wxGetApp().preset_bundle);
         wxGetApp().mainframe->show_calibration_button(!isBBL);
+
+        if (auto printer_structure_opt = printer_preset.config.option<ConfigOptionEnum<PrinterStructure>>("printer_structure")) {
+            wxGetApp().plater()->get_current_canvas3D()->get_arrange_settings().align_to_y_axis = (printer_structure_opt->value == PrinterStructure::psI3);
+        }
+        else
+            wxGetApp().plater()->get_current_canvas3D()->get_arrange_settings().align_to_y_axis = false;
+
         break;
     }
 
@@ -1412,8 +1489,7 @@ std::map<int, DynamicPrintConfig> Sidebar::build_filament_ams_list(MachineObject
     if (!obj) return filament_ams_list;
 
     auto vt_tray = obj->vt_tray;
-    bool is_support_virtual_tray = obj->is_function_supported(PrinterFunction::FUNC_VIRTUAL_TYAY);
-    if (is_support_virtual_tray) {
+    if (obj->ams_support_virtual_tray) {
         DynamicPrintConfig vt_tray_config;
         vt_tray_config.set_key_value("filament_id", new ConfigOptionStrings{ vt_tray.setting_id });
         vt_tray_config.set_key_value("tag_uid", new ConfigOptionStrings{ vt_tray.tag_uid });
@@ -1449,19 +1525,13 @@ std::map<int, DynamicPrintConfig> Sidebar::build_filament_ams_list(MachineObject
 void Sidebar::load_ams_list(std::string const &device, MachineObject* obj)
 {
     std::map<int, DynamicPrintConfig> filament_ams_list = build_filament_ams_list(obj);
-    
-    if (!obj) {
-        p->ams_list_device = device;
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " clear list";
-        wxGetApp().preset_bundle->filament_ams_list = filament_ams_list;
-        for (auto c : p->combos_filament)
-            c->update();
-        return;
-    }
 
     p->ams_list_device = device;
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": %1% items") % filament_ams_list.size();
+    if (wxGetApp().preset_bundle->filament_ams_list == filament_ams_list)
+        return;
     wxGetApp().preset_bundle->filament_ams_list = filament_ams_list;
+
     for (auto c : p->combos_filament)
         c->update();
 }
@@ -1679,6 +1749,7 @@ void Sidebar::update_ui_from_settings()
 
 bool Sidebar::show_object_list(bool show) const
 {
+    p->m_search_bar->Show(show);
     if (!p->m_object_list->Show(show))
         return false;
     if (!show)
@@ -1705,6 +1776,78 @@ std::string& Sidebar::get_search_line()
 {
     return p->searcher.search_string();
 }
+
+void Sidebar::auto_calc_flushing_volumes(const int modify_id) {
+    auto& project_config = wxGetApp().preset_bundle->project_config;
+    auto& printer_config = wxGetApp().preset_bundle->printers.get_edited_preset().config;
+    const std::vector<double>& init_matrix = (project_config.option<ConfigOptionFloats>("flush_volumes_matrix"))->values;
+    const std::vector<double>& init_extruders = (project_config.option<ConfigOptionFloats>("flush_volumes_vector"))->values;
+    ConfigOption* extra_flush_volume_opt = printer_config.option("nozzle_volume");
+    int extra_flush_volume = extra_flush_volume_opt ? (int)extra_flush_volume_opt->getFloat() : 0;
+    ConfigOptionFloat* flush_multi_opt = project_config.option<ConfigOptionFloat>("flush_multiplier");
+    float flush_multiplier = flush_multi_opt ? flush_multi_opt->getFloat() : 1.f;
+    vector<double> matrix = init_matrix;
+    int m_min_flush_volume = extra_flush_volume;
+    int m_max_flush_volume = Slic3r::g_max_flush_volume;
+    unsigned int m_number_of_extruders = (int)(sqrt(init_matrix.size()) + 0.001);
+    const std::vector<std::string> extruder_colours = wxGetApp().plater()->get_extruder_colors_from_plater_config();
+    vector<wxColour> m_colours;
+    for (const std::string& color : extruder_colours) {
+        m_colours.push_back(wxColor(color));
+    }
+    if (modify_id >= 0 && modify_id < m_colours.size()) {
+        for (int i = 0; i < m_colours.size(); ++i) {
+            int from_idx = i;
+            if (from_idx != modify_id) {
+                const wxColour& from = m_colours[from_idx];
+                bool is_from_support = is_support_filament(from_idx);
+                const wxColour& to = m_colours[modify_id];
+                bool is_to_support = is_support_filament(modify_id);
+                int flushing_volume = 0;
+                if (is_to_support) {
+                    flushing_volume = Slic3r::g_flush_volume_to_support;
+                }
+                else {
+                    const wxColour& to = m_colours[modify_id];
+                    Slic3r::FlushVolCalculator calculator(m_min_flush_volume, m_max_flush_volume);
+                    flushing_volume = calculator.calc_flush_vol(from.Alpha(), from.Red(), from.Green(), from.Blue(), to.Alpha(), to.Red(), to.Green(), to.Blue());
+                    if (is_from_support) {
+                        flushing_volume = std::max(Slic3r::g_min_flush_volume_from_support, flushing_volume);
+                    }
+                }
+                matrix[m_number_of_extruders * from_idx + modify_id] = flushing_volume;
+            }
+            int to_idx = i;
+            if (to_idx != modify_id) {
+                const wxColour& from = m_colours[modify_id];
+                bool is_from_support = is_support_filament(modify_id);
+                const wxColour& to = m_colours[to_idx];
+                bool is_to_support = is_support_filament(to_idx);
+                int flushing_volume = 0;
+                if (is_to_support) {
+                    flushing_volume = Slic3r::g_flush_volume_to_support;
+                }
+                else {
+                    const wxColour& to = m_colours[to_idx];
+                    Slic3r::FlushVolCalculator calculator(m_min_flush_volume, m_max_flush_volume);
+                    flushing_volume = calculator.calc_flush_vol(from.Alpha(), from.Red(), from.Green(), from.Blue(), to.Alpha(), to.Red(), to.Green(), to.Blue());
+                    if (is_from_support) {
+                        flushing_volume = std::max(Slic3r::g_min_flush_volume_from_support, flushing_volume);
+                    }
+                }
+                matrix[m_number_of_extruders * modify_id + to_idx] = flushing_volume;
+            }
+        }
+    }
+    (project_config.option<ConfigOptionFloats>("flush_volumes_matrix"))->values = std::vector<double>(matrix.begin(), matrix.end());
+
+
+    wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
+
+    wxGetApp().plater()->update_project_dirty_from_presets();
+    wxPostEvent(this, SimpleEvent(EVT_SCHEDULE_BACKGROUND_PROCESS, this));
+}
+
 
 // Plater::DropTarget
 
@@ -2153,6 +2296,8 @@ struct Plater::priv
     void on_action_split_objects(SimpleEvent&);
     void on_action_split_volumes(SimpleEvent&);
     void on_action_layersediting(SimpleEvent&);
+    void on_create_filament(SimpleEvent &);
+    void on_modify_filament(SimpleEvent &);
 
     void on_object_select(SimpleEvent&);
     void on_plate_name_change(SimpleEvent &);
@@ -2331,7 +2476,8 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         "layer_height", "initial_layer_print_height", "min_layer_height", "max_layer_height",
         "brim_width", "wall_loops", "wall_filament", "sparse_infill_density", "sparse_infill_filament", "top_shell_layers",
         "enable_support", "support_filament", "support_interface_filament",
-        "support_top_z_distance", "support_bottom_z_distance", "raft_layers"
+        "support_top_z_distance", "support_bottom_z_distance", "raft_layers",
+        "best_object_pos"
         }))
     , sidebar(new Sidebar(q))
     , notification_manager(std::make_unique<NotificationManager>(q))
@@ -2380,6 +2526,8 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     this->q->Bind(EVT_PREVIEW_ONLY_MODE_HINT, &priv::show_preview_only_hint, this);
     this->q->Bind(EVT_GLCANVAS_COLOR_MODE_CHANGED, &priv::on_change_color_mode, this);
     this->q->Bind(wxEVT_SYS_COLOUR_CHANGED, &priv::on_apple_change_color_mode, this);
+    this->q->Bind(EVT_CREATE_FILAMENT, &priv::on_create_filament, this);
+    this->q->Bind(EVT_MODIFY_FILAMENT, &priv::on_modify_filament, this);
 
     view3D = new View3D(q, bed, &model, config, &background_process);
     //BBS: use partplater's gcode
@@ -2569,7 +2717,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
 
             // update slice and print button
             wxGetApp().mainframe->update_slice_print_status(MainFrame::SlicePrintEventType::eEventSliceUpdate, true, false);
-            update();
+            set_need_update(true);
         });
     }
     if (wxGetApp().is_gcode_viewer())
@@ -2582,6 +2730,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         assemble_canvas->Bind(EVT_GLCANVAS_OBJECT_SELECT, &priv::on_object_select, this);
         assemble_canvas->Bind(EVT_GLVIEWTOOLBAR_3D, [q](SimpleEvent&) { q->select_view_3D("3D"); });
         assemble_canvas->Bind(EVT_GLCANVAS_RIGHT_CLICK, &priv::on_right_click, this);
+        assemble_canvas->Bind(EVT_GLCANVAS_FORCE_UPDATE, [this](SimpleEvent&) { update(); });
         assemble_canvas->Bind(EVT_GLCANVAS_UNDO, [this](SimpleEvent&) { this->undo(); });
         assemble_canvas->Bind(EVT_GLCANVAS_REDO, [this](SimpleEvent&) { this->redo(); });
     }
@@ -2613,6 +2762,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         q->Bind(EVT_SEND_CALIBRATION_FINISHED, [q](wxCommandEvent& evt) { q->send_calibration_job_finished(evt); });
         q->Bind(EVT_SEND_FINISHED, [q](wxCommandEvent &evt) { q->send_job_finished(evt); });
         q->Bind(EVT_PUBLISH_FINISHED, [q](wxCommandEvent &evt) { q->publish_job_finished(evt);});
+        q->Bind(EVT_OPEN_PLATESETTINGSDIALOG, [q](wxCommandEvent &evt) { q->open_platesettings_dialog(evt);});
         //q->Bind(EVT_GLVIEWTOOLBAR_ASSEMBLE, [q](SimpleEvent&) { q->select_view_3D("Assemble"); });
     }
 
@@ -2654,6 +2804,9 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         this->q->Bind(EVT_EJECT_DRIVE_NOTIFICAION_CLICKED, [this](EjectDriveNotificationClickedEvent&) { this->q->eject_drive(); });
         this->q->Bind(EVT_EXPORT_GCODE_NOTIFICAION_CLICKED, [this](ExportGcodeNotificationClickedEvent&) { this->q->export_gcode(true); });
         this->q->Bind(EVT_PRESET_UPDATE_AVAILABLE_CLICKED, [](PresetUpdateAvailableClickedEvent&) {  wxGetApp().get_preset_updater()->on_update_notification_confirm(); });
+        this->q->Bind(EVT_PRINTER_CONFIG_UPDATE_AVAILABLE_CLICKED, [](PrinterConfigUpdateAvailableClickedEvent&) {
+            wxGetApp().get_preset_updater()->do_printer_config_update();
+            wxGetApp().getDeviceManager()->reload_printer_settings(); });
 
         /* BBS do not handle removeable driver event */
         this->q->Bind(EVT_REMOVABLE_DRIVE_EJECTED, [this](RemovableDriveEjectEvent &evt) {
@@ -2793,7 +2946,7 @@ void Plater::priv::update(unsigned int flags)
 void Plater::priv::select_view(const std::string& direction)
 {
     if (current_panel == view3D) {
-        BOOST_LOG_TRIVIAL(info) << "select view3D";
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << "select view3D";
         view3D->select_view(direction);
         wxGetApp().update_ui_from_settings();
     }
@@ -2805,89 +2958,6 @@ void Plater::priv::select_view(const std::string& direction)
     else if (current_panel == assemble_view) {
         BOOST_LOG_TRIVIAL(info) << "select assemble view";
         assemble_view->select_view(direction);
-    }
-}
-// BBS set print speed table and find maximum speed
-void Plater::setPrintSpeedTable(GlobalSpeedMap &printSpeedMap) {
-    Slic3r::DynamicPrintConfig config = wxGetApp().preset_bundle->full_config();
-    printSpeedMap.maxSpeed = 0;
-    if (config.has("inner_wall_speed")) {
-        printSpeedMap.perimeterSpeed = config.opt_float("inner_wall_speed");
-        if (printSpeedMap.perimeterSpeed > printSpeedMap.maxSpeed)
-            printSpeedMap.maxSpeed = printSpeedMap.perimeterSpeed;
-    }
-    if (config.has("outer_wall_speed")) {
-        printSpeedMap.externalPerimeterSpeed = config.opt_float("outer_wall_speed");
-        printSpeedMap.maxSpeed = std::max(printSpeedMap.maxSpeed, printSpeedMap.externalPerimeterSpeed);
-    }
-    if (config.has("sparse_infill_speed")) {
-        printSpeedMap.infillSpeed = config.opt_float("sparse_infill_speed");
-        if (printSpeedMap.infillSpeed > printSpeedMap.maxSpeed)
-            printSpeedMap.maxSpeed = printSpeedMap.infillSpeed;
-    }
-    if (config.has("internal_solid_infill_speed")) {
-        printSpeedMap.solidInfillSpeed = config.opt_float("internal_solid_infill_speed");
-        if (printSpeedMap.solidInfillSpeed > printSpeedMap.maxSpeed)
-            printSpeedMap.maxSpeed = printSpeedMap.solidInfillSpeed;
-    }
-    if (config.has("top_surface_speed")) {
-        printSpeedMap.topSolidInfillSpeed = config.opt_float("top_surface_speed");
-        if (printSpeedMap.topSolidInfillSpeed > printSpeedMap.maxSpeed)
-            printSpeedMap.maxSpeed = printSpeedMap.topSolidInfillSpeed;
-    }
-    if (config.has("support_speed")) {
-        printSpeedMap.supportSpeed = config.opt_float("support_speed");
-
-        if (printSpeedMap.supportSpeed > printSpeedMap.maxSpeed)
-            printSpeedMap.maxSpeed = printSpeedMap.supportSpeed;
-    }
-
-
-    auto& print = wxGetApp().plater()->get_partplate_list().get_current_fff_print();
-    auto print_config = print.config();
-    printSpeedMap.bed_poly.points = get_bed_shape(*(wxGetApp().plater()->config()));
-    Pointfs excluse_area_points = print_config.bed_exclude_area.values;
-    Polygons exclude_polys;
-    Polygon exclude_poly;
-    for (int i = 0; i < excluse_area_points.size(); i++) {
-        auto pt = excluse_area_points[i];
-        exclude_poly.points.emplace_back(scale_(pt.x()), scale_(pt.y()));
-        if (i % 4 == 3) {  // exclude areas are always rectangle
-            exclude_polys.push_back(exclude_poly);
-            exclude_poly.points.clear();
-        }
-    }
-    printSpeedMap.bed_poly = diff({ printSpeedMap.bed_poly }, exclude_polys)[0];
-}
-
-// find temperature of heatend and bed and matierial of an given extruder
-void Plater::setExtruderParams(std::map<size_t, Slic3r::ExtruderParams>& extParas) {
-    extParas.clear();
-    Slic3r::DynamicPrintConfig config = wxGetApp().preset_bundle->full_config();
-    // BBS
-    int numExtruders = wxGetApp().preset_bundle->filament_presets.size();
-    for (unsigned int i = 0; i != numExtruders; ++i) {
-        std::string matName = "";
-        // BBS
-        int bedTemp = 35;
-        double endTemp = 0.f;
-        if (config.has("filament_type")) {
-            matName = config.opt_string("filament_type", i);
-        }
-        if (config.has("nozzle_temperature")) {
-            endTemp = config.opt_int("nozzle_temperature", i);
-        }
-
-        // FIXME: curr_bed_type is now a plate config rather than a global config.
-        // Currently bed temp is not used for brim generation, so just comment it for now.
-#if 0
-        if (config.has("curr_bed_type")) {
-            BedType curr_bed_type = config.opt_enum<BedType>("curr_bed_type");
-            bedTemp = config.opt_int(get_bed_temp_key(curr_bed_type), i);
-        }
-#endif
-        if (i == 0) extParas.insert({ i,{matName, bedTemp, endTemp} });
-        extParas.insert({ i + 1,{matName, bedTemp, endTemp} });
     }
 }
 
@@ -2919,10 +2989,15 @@ wxColour Plater::get_next_color_for_filament()
 wxString Plater::get_slice_warning_string(GCodeProcessorResult::SliceWarning& warning)
 {
     if (warning.msg == BED_TEMP_TOO_HIGH_THAN_FILAMENT) {
-        return _L("The bed temperature exceeds filament's vitrification temperature. Please open the front door of printer before printing to avoid nozzle clog.");
+        return _L("The current hot bed temperature is relatively high. The nozzle may be clogged when printing this filament in a closed enclosure. Please open the front door and/or remove the upper glass.");
     } else if (warning.msg == NOZZLE_HRC_CHECKER) {
         return _L("The nozzle hardness required by the filament is higher than the default nozzle hardness of the printer. Please replace the hardened nozzle or filament, otherwise, the nozzle will be attrited or damaged.");
-    } else {
+    } else if (warning.msg == NOT_SUPPORT_TRADITIONAL_TIMELAPSE) {
+        return _L("Enabling traditional timelapse photography may cause surface imperfections. It is recommended to change to smooth mode.");
+    } else if (warning.msg == NOT_GENERATE_TIMELAPSE) {
+        return wxString();
+    }
+    else {
         return wxString(warning.msg);
     }
 }
@@ -2946,7 +3021,7 @@ void Plater::priv::apply_free_camera_correction(bool apply/* = true*/)
 void Plater::priv::select_view_3D(const std::string& name, bool no_slice)
 {
     if (name == "3D") {
-        BOOST_LOG_TRIVIAL(info) << "select view3D";
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << "select view3D";
         if (q->only_gcode_mode() || q->using_exported_file()) {
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("goto preview page when loading gcode/exported_3mf");
         }
@@ -2955,8 +3030,13 @@ void Plater::priv::select_view_3D(const std::string& name, bool no_slice)
     else if (name == "Preview") {
         BOOST_LOG_TRIVIAL(info) << "select preview";
         //BBS update extruder params and speed table before slicing
-        Plater::setExtruderParams(Slic3r::Model::extruderParamsMap);
-        Plater::setPrintSpeedTable(Slic3r::Model::printSpeedMap);
+        const Slic3r::DynamicPrintConfig& config = wxGetApp().preset_bundle->full_config();
+        auto& print = q->get_partplate_list().get_current_fff_print();
+        auto print_config = print.config();
+        int numExtruders = wxGetApp().preset_bundle->filament_presets.size();
+
+        Model::setExtruderParams(config, numExtruders);
+        Model::setPrintSpeedTable(config, print_config);
         set_current_panel(preview, no_slice);
     }
     else if (name == "Assemble") {
@@ -3235,31 +3315,45 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                         }
                     } else if (load_config && (file_version > app_version)) {
                         if (config_substitutions.unrecogized_keys.size() > 0) {
-                            wxString text  = wxString::Format(_L("The 3mf's version %s is newer than %s's version %s, Found following keys unrecognized:"),
-                                                             file_version.to_string(), std::string(SLIC3R_APP_FULL_NAME), app_version.to_string());
+                            wxString text  = wxString::Format(_L("This slicer file version %s is newer than %s's version:"),
+                                                             file_version.to_string(), std::string(SLIC3R_APP_FULL_NAME));
                             text += "\n";
                             bool     first = true;
                             // std::string context = into_u8(text);
                             wxString context = text;
-                            for (auto &key : config_substitutions.unrecogized_keys) {
-                                context += "  -";
-                                context += key;
-                                context += ";\n";
-                                first = false;
+                            if (wxGetApp().app_config->get("user_mode") == "develop") {
+                                for (auto &key : config_substitutions.unrecogized_keys) {
+                                    context += "  -";
+                                    context += key;
+                                    context += ";\n";
+                                    first = false;
+                                }
                             }
-                            wxString append = _L("You'd better upgrade your software.\n");
+                            wxString append = _L("Would you like to update your Bambu Studio software to enable all functionality in this slicer file?\n");
                             context += "\n\n";
                             // context += into_u8(append);
                             context += append;
-                            show_info(q, context, _L("Newer 3mf version"));
+                            MessageDialog msg_window(q, context, wxString(SLIC3R_APP_FULL_NAME " - ") + _L("Newer 3mf version"), wxYES | wxNO | wxICON_INFORMATION);
+                            auto res = msg_window.ShowModal();
+                            if (res == wxID_YES) {
+                                wxGetApp().check_new_version(true, 1);
+                            } else if (res == wxID_NO) {
+                                show_info(q, _L("you can always update Bambu Studio at your convenience. The slicer file will now be loaded without full functionality."));
+                            }
                         }
                         else {
                             //if the minor version is not matched
                             if (file_version.min() != app_version.min()) {
-                                wxString text  = wxString::Format(_L("The 3mf's version %s is newer than %s's version %s, Suggest to upgrade your software."),
-                                                 file_version.to_string(), std::string(SLIC3R_APP_FULL_NAME), app_version.to_string());
+                                wxString text  = wxString::Format(_L("This slicer file version %s is newer than %s's version.\n\nWould you like to update your Bambu Studio software to enable all functionality in this slicer file?"),
+                                                 file_version.to_string(), std::string(SLIC3R_APP_FULL_NAME));
                                 text += "\n";
-                                show_info(q, text, _L("Newer 3mf version"));
+                                MessageDialog msg_window(q, text, wxString(SLIC3R_APP_FULL_NAME " - ") + _L("Newer 3mf version"), wxYES | wxNO | wxICON_INFORMATION);
+                                auto res = msg_window.ShowModal();
+                                if (res == wxID_YES) {
+                                    wxGetApp().check_new_version(true, 1);
+                                } else if (res == wxID_NO) {
+                                    show_info(q, _L("you can always update Bambu Studio at your convenience. The slicer file will now be loaded without full functionality."));
+                                }
                             }
                         }
                     } else if (!load_config) {
@@ -3379,23 +3473,44 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                     if (!config.empty()) {
                         Preset::normalize(config);
                         PresetBundle *preset_bundle = wxGetApp().preset_bundle;
-                        // BBS: first validate the printer
-                        // TODO: remove it after released""
-                        bool validated = preset_bundle->validate_printers(filename.string(), config);
-                        if (!validated) {
-                            load_config      = false;
-                            load_old_project = true;
-                            // select view to 3D
-                            q->select_view_3D("3D");
-                            // select plate 0 as default
-                            q->select_plate(0);
-                            show_info(q, _L("The 3mf is not compatible, load geometry data only!"), _L("Incompatible 3mf"));
-                            for (ModelObject *model_object : model.objects) {
-                                model_object->config.reset();
-                                // Is there any modifier or advanced config data?
-                                for (ModelVolume *model_volume : model_object->volumes) model_volume->config.reset();
+
+                        auto choise = wxGetApp().app_config->get("no_warn_when_modified_gcodes");
+                        if (choise.empty() || choise != "true") {
+                            // BBS: first validate the printer
+                            // validate the system profiles
+                            std::set<std::string> modified_gcodes;
+                            int validated = preset_bundle->validate_presets(filename.string(), config, modified_gcodes);
+                            if (validated == VALIDATE_PRESETS_MODIFIED_GCODES) {
+                                std::string warning_message;
+                                warning_message += "\n";
+                                for (std::set<std::string>::iterator it=modified_gcodes.begin(); it!=modified_gcodes.end(); ++it)
+                                    warning_message += "-" + *it + "\n";
+                                warning_message += "\n";
+                                //show_info(q, _L("The 3mf has following modified G-codes in filament or printer presets:") + warning_message+ _L("Please confirm that these modified G-codes are safe to prevent any damage to the machine!"), _L("Modified G-codes"));
+
+                                MessageDialog dlg(q, _L("The 3mf has following modified G-codes in filament or printer presets:") + warning_message+ _L("Please confirm that these modified G-codes are safe to prevent any damage to the machine!"), _L("Modified G-codes"));
+                                dlg.show_dsa_button();
+                                auto  res = dlg.ShowModal();
+                                if (dlg.get_checkbox_state())
+                                    wxGetApp().app_config->set("no_warn_when_modified_gcodes", "true");
                             }
-                        } else {
+                            else if ((validated == VALIDATE_PRESETS_PRINTER_NOT_FOUND) || (validated == VALIDATE_PRESETS_FILAMENTS_NOT_FOUND)) {
+                                std::string warning_message;
+                                warning_message += "\n";
+                                for (std::set<std::string>::iterator it=modified_gcodes.begin(); it!=modified_gcodes.end(); ++it)
+                                    warning_message += "-" + *it + "\n";
+                                warning_message += "\n";
+                                //show_info(q, _L("The 3mf has following customized filament or printer presets:") + warning_message + _L("Please confirm that the G-codes within these presets are safe to prevent any damage to the machine!"), _L("Customized Preset"));
+                                MessageDialog dlg(q, _L("The 3mf has following customized filament or printer presets:") + from_u8(warning_message)+ _L("Please confirm that the G-codes within these presets are safe to prevent any damage to the machine!"), _L("Customized Preset"));
+                                dlg.show_dsa_button();
+                                auto  res = dlg.ShowModal();
+                                if (dlg.get_checkbox_state())
+                                    wxGetApp().app_config->set("no_warn_when_modified_gcodes", "true");
+                            }
+                        }
+
+                        //always load config
+                        {
                             preset_bundle->load_config_model(filename.string(), std::move(config), file_version);
 
                             ConfigOption* bed_type_opt = preset_bundle->project_config.option("curr_bed_type");
@@ -4034,7 +4149,7 @@ wxString Plater::priv::get_export_file(GUI::FileType file_type)
         {
             // XXX: Problem on OS X with double extension?
             output_file.replace_extension("zip.amf");
-            dlg_title = _devL("Export AMF file:");
+            dlg_title = _L("Export AMF file:");
             break;
         }
         case FT_3MF:
@@ -4046,7 +4161,7 @@ wxString Plater::priv::get_export_file(GUI::FileType file_type)
         case FT_OBJ:
         {
             output_file.replace_extension("obj");
-            dlg_title = _devL("Export OBJ file:");
+            dlg_title = _L("Export OBJ file:");
             break;
         }
         default: break;
@@ -4066,6 +4181,20 @@ wxString Plater::priv::get_export_file(GUI::FileType file_type)
 
     wxString out_path = dlg.GetPath();
     fs::path path(into_path(out_path));
+#ifdef __WXMSW__
+    if (path.extension() != output_file.extension()) {
+        out_path += output_file.extension().string();
+        boost::system::error_code ec;
+        if (boost::filesystem::exists(into_u8(out_path), ec)) {
+            auto result = MessageBox(q->GetHandle(),
+                wxString::Format(_L("The file %s already exists\nDo you want to replace it?"), out_path),
+                _L("Comfirm Save As"),
+                MB_YESNO | MB_ICONWARNING);
+            if (result != IDYES)
+                return wxEmptyString;
+        }
+    }
+#endif
     wxGetApp().app_config->update_last_output_dir(path.parent_path().string());
 
     return out_path;
@@ -4249,6 +4378,7 @@ void Plater::priv::reset(bool apply_presets_change)
     clear_warnings();
 
     set_project_filename("");
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " call set_project_filename: empty";
 
     if (view3D->is_layers_editing_enabled())
         view3D->get_canvas3d()->force_main_toolbar_left_action(view3D->get_canvas3d()->get_main_toolbar_item_id("layersediting"));
@@ -4311,7 +4441,7 @@ void Plater::priv::mirror(Axis axis)
 void Plater::find_new_position(const ModelInstancePtrs &instances)
 {
     arrangement::ArrangePolygons movable, fixed;
-    arrangement::ArrangeParams arr_params = get_arrange_params(this);
+    arrangement::ArrangeParams arr_params = init_arrange_params(this);
 
     for (const ModelObject *mo : p->model.objects)
         for (ModelInstance *inst : mo->instances) {
@@ -4794,7 +4924,7 @@ unsigned int Plater::priv::update_restart_background_process(bool force_update_s
 }
 
 void Plater::priv::update_fff_scene()
-{   
+{
     if (this->preview != nullptr)
         this->preview->reload_print();
     // In case this was MM print, wipe tower bounding box on 3D tab might need redrawing with exact depth:
@@ -4834,11 +4964,10 @@ bool Plater::priv::replace_volume_with_stl(int object_idx, int volume_idx, const
 {
     const std::string path = new_path.string();
     wxBusyCursor wait;
-    wxBusyInfo info(_devL("Replace from:") + " " + from_u8(path), q->get_current_canvas3D()->get_wxglcanvas());
 
     Model new_model;
     try {
-        new_model = Model::read_from_file(path, nullptr, nullptr, LoadStrategy::AddDefaultInstances);
+        new_model = Model::read_from_file(path, nullptr, nullptr, LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel);
         for (ModelObject* model_object : new_model.objects) {
             model_object->center_around_origin();
             model_object->ensure_on_bed();
@@ -4850,10 +4979,12 @@ bool Plater::priv::replace_volume_with_stl(int object_idx, int volume_idx, const
     }
 
     if (new_model.objects.size() > 1 || new_model.objects.front()->volumes.size() > 1) {
-        MessageDialog dlg(q, _devL("Unable to replace with more than one volume"), _devL("Error during replace"), wxOK | wxOK_DEFAULT | wxICON_WARNING);
+        MessageDialog dlg(q, _L("Unable to replace with more than one volume"), _L("Error during replace"), wxOK | wxOK_DEFAULT | wxICON_WARNING);
         dlg.ShowModal();
         return false;
     }
+
+    wxBusyInfo info(_L("Replace from:") + " " + from_u8(path), q->get_current_canvas3D()->get_wxglcanvas());
 
     if (!snapshot.empty())
         q->take_snapshot(snapshot);
@@ -5115,8 +5246,8 @@ void Plater::priv::reload_from_disk()
             }
         }
         else {
-            wxString      message = _devL("Do you want to replace it") + " ?";
-            MessageDialog dlg(q, message, wxMessageBoxCaptionStr, wxYES_NO | wxYES_DEFAULT | wxICON_QUESTION);
+            wxString      message = _L("Do you want to replace it") + " ?";
+            MessageDialog dlg(q, message, _L("Message"), wxYES_NO | wxYES_DEFAULT | wxICON_QUESTION);
             if (dlg.ShowModal() == wxID_YES)
 #if ENABLE_RELOAD_FROM_DISK_REWORK
                 replace_paths.emplace_back(search, sel_filename_path);
@@ -5144,7 +5275,7 @@ void Plater::priv::reload_from_disk()
         const auto& path = input_paths[i].string();
 
         wxBusyCursor wait;
-        wxBusyInfo info(_devL("Reload from:") + " " + from_u8(path), q->get_current_canvas3D()->get_wxglcanvas());
+        wxBusyInfo info(_L("Reload from:") + " " + from_u8(path), q->get_current_canvas3D()->get_wxglcanvas());
 
         Model new_model;
         try
@@ -5155,7 +5286,7 @@ void Plater::priv::reload_from_disk()
             std::vector<Preset*> project_presets;
 
             // BBS: backup
-            new_model = Model::read_from_file(path, nullptr, nullptr, LoadStrategy::AddDefaultInstances, &plate_data, &project_presets);
+            new_model = Model::read_from_file(path, nullptr, nullptr, LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel, &plate_data, &project_presets);
             for (ModelObject* model_object : new_model.objects)
             {
                 model_object->center_around_origin();
@@ -5164,7 +5295,7 @@ void Plater::priv::reload_from_disk()
 
             if (plate_data.size() > 0)
             {
-                partplate_list.load_from_3mf_structure(plate_data);
+                //partplate_list.load_from_3mf_structure(plate_data);
                 partplate_list.update_slice_context_to_current_plate(background_process);
                 this->preview->update_gcode_result(partplate_list.get_current_slice_result());
                 release_PlateData_list(plate_data);
@@ -5355,11 +5486,11 @@ void Plater::priv::reload_from_disk()
 #endif // ENABLE_RELOAD_FROM_DISK_REWORK
 
     if (!fail_list.empty()) {
-        wxString message = _devL("Unable to reload:") + "\n";
+        wxString message = _L("Unable to reload:") + "\n";
         for (const wxString& s : fail_list) {
             message += s + "\n";
         }
-        MessageDialog dlg(q, message, _devL("Error during reload"), wxOK | wxOK_DEFAULT | wxICON_WARNING);
+        MessageDialog dlg(q, message, _L("Error during reload"), wxOK | wxOK_DEFAULT | wxICON_WARNING);
         dlg.ShowModal();
     }
 
@@ -5725,8 +5856,33 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
     // So, use GetSelection() from event parameter
     int selection = evt.GetSelection();
 
+    auto marker = reinterpret_cast<size_t>(combo->GetClientData(selection));
+    if (PresetComboBox::LabelItemType::LABEL_ITEM_WIZARD_ADD_PRINTERS == marker) {
+        sidebar->create_printer_preset();
+        return;
+    }
+
     auto idx = combo->get_filament_idx();
 
+    // BBS:Save the plate parameters before switching
+    PartPlateList& old_plate_list = this->partplate_list;
+    PartPlate* old_plate = old_plate_list.get_selected_plate();
+    Vec3d old_plate_pos = old_plate->get_center_origin();
+
+    // BBS: Save the model in the current platelist
+    std::vector<vector<int> > plate_object;
+    for (size_t i = 0; i < old_plate_list.get_plate_count(); ++i) {
+        PartPlate* plate = old_plate_list.get_plate(i);
+        std::vector<int> obj_idxs;
+        for (int obj_idx = 0; obj_idx < model.objects.size(); obj_idx++) {
+            if (plate && plate->contain_instance(obj_idx, 0)) {
+                obj_idxs.emplace_back(obj_idx);
+            }
+        }
+        plate_object.emplace_back(obj_idxs);
+    }
+
+    bool flag = is_support_filament(idx);
     //! Because of The MSW and GTK version of wxBitmapComboBox derived from wxComboBox,
     //! but the OSX version derived from wxOwnerDrawnCombo.
     //! So, to get selected string we do
@@ -5742,8 +5898,11 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
         wxGetApp().plater()->update_project_dirty_from_presets();
         wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
         dynamic_filament_list.update();
+        bool flag_is_change = is_support_filament(idx);
+        if (flag != flag_is_change) {
+            sidebar->auto_calc_flushing_volumes(idx);
+        }
     }
-
     bool select_preset = !combo->selection_is_changed_according_to_physical_printers();
     // TODO: ?
     if (preset_type == Preset::TYPE_FILAMENT && sidebar->is_multifilament()) {
@@ -5773,6 +5932,21 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
      * and for SLA presets they should be deleted
      */
         wxGetApp().obj_list()->update_object_list_by_printer_technology();
+
+        // BBS:Model reset by plate center
+        PartPlateList& cur_plate_list = this->partplate_list;
+        PartPlate* cur_plate = cur_plate_list.get_curr_plate();
+        Vec3d cur_plate_pos = cur_plate->get_center_origin();
+
+        if (old_plate_pos.x() != cur_plate_pos.x() || old_plate_pos.y() != cur_plate_pos.y()) {
+            for (int i = 0; i < plate_object.size(); ++i) {
+                view3D->select_object_from_idx(plate_object[i]);
+                this->sidebar->obj_list()->update_selections();
+                view3D->center_selected_plate(i);
+            }
+
+            view3D->deselect_all();
+        }
     }
 
 #ifdef __WXMSW__
@@ -5862,7 +6036,11 @@ void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
         // Now process state.warnings.
         for (auto const& warning : state.warnings) {
             if (warning.current) {
-                notification_manager->push_slicing_warning_notification(warning.message, false, model_object, object_id, warning_step, warning.message_id);
+                NotificationManager::NotificationLevel notif_level = NotificationManager::NotificationLevel::WarningNotificationLevel;
+                if (evt.status.message_type == PrintStateBase::SlicingNotificationType::SlicingReplaceInitEmptyLayers | PrintStateBase::SlicingNotificationType::SlicingEmptyGcodeLayers) {
+                    notif_level = NotificationManager::NotificationLevel::SeriousWarningNotificationLevel;
+                }
+                notification_manager->push_slicing_warning_notification(warning.message, false, model_object, object_id, warning_step, warning.message_id, notif_level);
                 add_warning(warning, object_id.id);
             }
         }
@@ -6031,8 +6209,8 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
             }
         } else {
             std::vector<const ModelObject *> ptrs;
-            for (auto oid : message.second) 
-            { 
+            for (auto oid : message.second)
+            {
                 const PrintObject *print_object = this->background_process.m_fff_print->get_object(ObjectID(oid));
                 if (print_object) { ptrs.push_back(print_object->model_object()); }
             }
@@ -6244,8 +6422,13 @@ void Plater::priv::on_action_slice_plate(SimpleEvent&)
     if (q != nullptr) {
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received slice plate event\n" ;
         //BBS update extruder params and speed table before slicing
-        Plater::setExtruderParams(Slic3r::Model::extruderParamsMap);
-        Plater::setPrintSpeedTable(Slic3r::Model::printSpeedMap);
+        const Slic3r::DynamicPrintConfig& config = wxGetApp().preset_bundle->full_config();
+        auto& print = q->get_partplate_list().get_current_fff_print();
+        auto print_config = print.config();
+        int numExtruders = wxGetApp().preset_bundle->filament_presets.size();
+
+        Model::setExtruderParams(config, numExtruders);
+        Model::setPrintSpeedTable(config, print_config);
         m_slice_all = false;
         q->reslice();
         q->select_view_3D("Preview");
@@ -6258,8 +6441,13 @@ void Plater::priv::on_action_slice_all(SimpleEvent&)
     if (q != nullptr) {
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received slice project event\n" ;
         //BBS update extruder params and speed table before slicing
-        Plater::setExtruderParams(Slic3r::Model::extruderParamsMap);
-        Plater::setPrintSpeedTable(Slic3r::Model::printSpeedMap);
+        const Slic3r::DynamicPrintConfig& config = wxGetApp().preset_bundle->full_config();
+        auto& print = q->get_partplate_list().get_current_fff_print();
+        auto print_config = print.config();
+        int numExtruders = wxGetApp().preset_bundle->filament_presets.size();
+
+        Model::setExtruderParams(config, numExtruders);
+        Model::setPrintSpeedTable(config, print_config);
         m_slice_all = true;
         m_slice_all_only_has_gcode = true;
         m_cur_slice_plate = 0;
@@ -6362,6 +6550,7 @@ void Plater::priv::on_action_print_all(SimpleEvent&)
 
     //BBS
     if (!m_select_machine_dlg) m_select_machine_dlg = new SelectMachineDialog(q);
+    m_select_machine_dlg->set_print_type(PrintFromType::FROM_NORMAL);
     m_select_machine_dlg->prepare(PLATE_ALL_IDX);
     m_select_machine_dlg->ShowModal();
     record_start_print_preset("print_all");
@@ -6478,6 +6667,10 @@ void Plater::priv::on_filament_color_changed(wxCommandEvent &event)
 {
     //q->update_all_plate_thumbnails(true);
     //q->get_preview_canvas3D()->update_plate_thumbnails();
+    if (wxGetApp().app_config->get("auto_calculate") == "true") {
+        int modify_id = event.GetInt();
+        sidebar->auto_calc_flushing_volumes(modify_id);
+    }
 }
 
 void Plater::priv::install_network_plugin(wxCommandEvent &event)
@@ -6735,7 +6928,7 @@ wxString Plater::priv::get_project_filename(const wxString& extension) const
     }
 }
 
-wxString Plater::priv::get_export_gcode_filename(const wxString& extension, bool only_filename, bool export_all) 
+wxString Plater::priv::get_export_gcode_filename(const wxString& extension, bool only_filename, bool export_all)
 {
     wxString curr_project_name = m_project_name;
 
@@ -6786,6 +6979,7 @@ wxString Plater::priv::get_project_name()
 //BBS
 void Plater::priv::set_project_name(const wxString& project_name)
 {
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " project is:" << project_name;
     m_project_name = project_name;
     //update topbar title
     wxGetApp().mainframe->SetTitle(m_project_name);
@@ -6815,6 +7009,7 @@ void Plater::priv::set_project_filename(const wxString& filename)
     full_path.replace_extension("");
 
     m_project_folder = full_path.parent_path();
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " project folder is:" << m_project_folder.string();
 
     //BBS
     wxString project_name = from_u8(full_path.filename().string());
@@ -7275,7 +7470,8 @@ bool Plater::priv::can_increase_instances() const
 
     int obj_idx = get_selected_object_idx();
     return (0 <= obj_idx) && (obj_idx < (int)model.objects.size())
-        && !sidebar->obj_list()->has_selected_cut_object();
+        && !sidebar->obj_list()->has_selected_cut_object()
+        && std::all_of(model.objects[obj_idx]->instances.begin(), model.objects[obj_idx]->instances.end(), [](auto& inst) {return inst->printable; });
 }
 
 bool Plater::priv::can_decrease_instances() const
@@ -7322,6 +7518,30 @@ void Plater::priv::on_action_layersediting(SimpleEvent&)
 {
     view3D->enable_layers_editing(!view3D->is_layers_editing_enabled());
     notification_manager->set_move_from_overlay(view3D->is_layers_editing_enabled());
+}
+
+void Plater::priv::on_create_filament(SimpleEvent &)
+{
+    CreateFilamentPresetDialog dlg(wxGetApp().mainframe);
+    int res = dlg.ShowModal();
+    if (wxID_OK == res) {
+        wxGetApp().mainframe->update_side_preset_ui();
+        update_ui_from_settings();
+        sidebar->update_all_preset_comboboxes();
+        CreatePresetSuccessfulDialog success_dlg(wxGetApp().mainframe, SuccessType::FILAMENT);
+        int                          res = success_dlg.ShowModal();
+    }
+}
+
+void Plater::priv::on_modify_filament(SimpleEvent &evt)
+{
+    FilamentInfomation *       filament_info = static_cast<FilamentInfomation *>(evt.GetEventObject());
+    EditFilamentPresetDialog dlg(wxGetApp().mainframe, filament_info);
+    int                        res = dlg.ShowModal();
+
+    wxGetApp().mainframe->update_side_preset_ui();
+    update_ui_from_settings();
+    sidebar->update_all_preset_comboboxes();
 }
 
 void Plater::priv::enter_gizmos_stack()
@@ -7634,10 +7854,10 @@ void Plater::priv::update_after_undo_redo(const UndoRedo::Snapshot& snapshot, bo
     // triangle meshes may have gotten released from the scene or the background processing, therefore now being calculated into the Undo / Redo stack size.
         this->undo_redo_stack().release_least_recently_used();
     //YS_FIXME update obj_list from the deserialized model (maybe store ObjectIDs into the tree?) (no selections at this point of time)
-        get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? 
+        get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ?
             assemble_view->get_canvas3d()->get_selection().set_deserialized(GUI::Selection::EMode(this->undo_redo_stack().selection_deserialized().mode), this->undo_redo_stack().selection_deserialized().volumes_and_instances) :
             this->view3D->get_canvas3d()->get_selection().set_deserialized(GUI::Selection::EMode(this->undo_redo_stack().selection_deserialized().mode), this->undo_redo_stack().selection_deserialized().volumes_and_instances);
-    get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? 
+    get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ?
         assemble_view->get_canvas3d()->get_gizmos_manager().update_after_undo_redo(snapshot) :
         this->view3D->get_canvas3d()->get_gizmos_manager().update_after_undo_redo(snapshot);
 
@@ -7772,7 +7992,7 @@ Plater::Plater(wxWindow *parent, MainFrame *main_frame)
     , p(new priv(this, main_frame))
 {
     // Initialization performed in the private c-tor
-    enable_wireframe(false);
+    enable_wireframe(true);
 }
 
 bool Plater::Show(bool show)
@@ -7880,6 +8100,7 @@ int Plater::new_project(bool skip_confirm, bool silent, const wxString &project_
 void Plater::load_project(wxString const& filename2,
     wxString const& originfile)
 {
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "filename is: " << filename2 << "and originfile is: " << originfile; 
     auto filename = filename2;
     auto check = [&filename, this] (bool yes_or_no) {
         if (!yes_or_no && !wxGetApp().check_and_save_current_preset_changes(_L("Load project"),
@@ -7945,14 +8166,19 @@ void Plater::load_project(wxString const& filename2,
 
     // if res is empty no data has been loaded
     if (!res.empty() && (load_restore || !(strategy & LoadStrategy::Silence))) {
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " call set_project_filename: " << load_restore ? originfile : filename;
         p->set_project_filename(load_restore ? originfile : filename);
-        if (load_restore && originfile.IsEmpty())
-            p->set_project_name(_L("Untitled"));
+        if (load_restore && originfile.IsEmpty()) {
+        p->set_project_name(_L("Untitled"));
+        }
+            
     } else {
-        if (using_exported_file())
+        if (using_exported_file()) {
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " using ecported set project filename: " << filename;
             p->set_project_filename(filename);
+        }
+            
     }
-
 
     // BBS set default 3D view and direction after loading project
     //p->select_view_3D("3D");
@@ -7982,6 +8208,7 @@ void Plater::load_project(wxString const& filename2,
 
     wxGetApp().params_panel()->switch_to_object_if_has_object_configs();
 
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " load project done";
     m_loading_project = false;
 }
 
@@ -8001,7 +8228,7 @@ int Plater::save_project(bool saveAs)
         return wxID_CANCEL;
 
     //BBS export 3mf without gcode
-    if (export_3mf(into_path(filename), SaveStrategy::SplitModel | SaveStrategy::ShareMesh) < 0) {
+    if (export_3mf(into_path(filename), SaveStrategy::SplitModel | SaveStrategy::ShareMesh | SaveStrategy::FullPathSources) < 0) {
         MessageDialog(this, _L("Failed to save the project.\nPlease check whether the folder exists online or if other programs open the project file."),
             _L("Save project"), wxOK | wxICON_WARNING).ShowModal();
         return wxID_CANCEL;
@@ -8010,6 +8237,7 @@ int Plater::save_project(bool saveAs)
     Slic3r::remove_backup(model(), false);
 
     p->set_project_filename(filename);
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " call set_project_filename: " << filename;
 
     up_to_date(true, false);
     up_to_date(true, true);
@@ -8033,26 +8261,27 @@ int Plater::save_project(bool saveAs)
 //BBS import model by model id
 void Plater::import_model_id(wxString download_info)
 {
-    //std::string download_origin_url = wxGetApp().url_decode(download_info.ToStdString());
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " download info: " << download_info;
 
-    std::string download_origin_url = download_info.ToStdString();
-    std::string download_url;
-    std::string filename;
+    wxString download_origin_url = download_info;
+    wxString download_url;
+    wxString filename;
+    wxString separator = "&name=";
 
     try
     {
-        std::vector<std::string> origin_array = wxGetApp().split_str(download_origin_url, "&name=");
-        if (origin_array.size() >= 2) {
+        size_t namePos = download_info.Find(separator);
+        if (namePos != wxString::npos) {
+            download_url = download_info.Mid(0, namePos);
+            filename = download_info.Mid(namePos + separator.Length());
 
-            download_url = origin_array[0];
-            filename = origin_array[1];
         }
-        else if (!download_origin_url.empty()) {
-
-            fs::path download_path = fs::path(download_origin_url);
+        else {
+            fs::path download_path = fs::path(download_origin_url.wx_str());
             download_url = download_origin_url;
             filename = download_path.filename().string();
         }
+
     }
     catch (const std::exception& error)
     {
@@ -8060,7 +8289,8 @@ void Plater::import_model_id(wxString download_info)
     }
 
     bool download_ok = false;
-    /* save to a file */
+    int retry_count = 0;
+    const int max_retries = 3;
 
     /* jump to 3D eidtor */
     wxGetApp().mainframe->select_tab((size_t)MainFrame::TabPosition::tp3DEditor);
@@ -8072,7 +8302,7 @@ void Plater::import_model_id(wxString download_info)
     wxString msg;
     wxString dlg_title = _L("Importing Model");
 
-    int percent = 1;
+    int percent = 0;
     ProgressDialog dlg(dlg_title,
         wxString(' ', 100) + "\n\n\n\n",
         100,    // range
@@ -8088,7 +8318,7 @@ void Plater::import_model_id(wxString download_info)
     p->project.reset();
 
     /* prepare project and profile */
-    boost::thread import_thread = Slic3r::create_thread([&percent, &cont, &cancel, &msg, &target_path, &download_ok, download_url, &filename] {
+    boost::thread import_thread = Slic3r::create_thread([&percent, &cont, &cancel, &retry_count, max_retries, &msg, &target_path, &download_ok, download_url, &filename] {
 
         NetworkAgent* m_agent = Slic3r::GUI::wxGetApp().getAgent();
         if (!m_agent) return;
@@ -8109,7 +8339,7 @@ void Plater::import_model_id(wxString download_info)
         try
         {
             vecFiles.clear();
-            wxString extension = fs::path(filename).extension().c_str();
+            wxString extension = fs::path(filename.wx_str()).extension().c_str();
             auto name = filename.substr(0, filename.length() - extension.length() - 1);
 
             for (const auto& iter : boost::filesystem::directory_iterator(target_path))
@@ -8132,7 +8362,7 @@ void Plater::import_model_id(wxString download_info)
 
         //update filename
         if (is_already_exist && vecFiles.size() >= 1) {
-            wxString extension = fs::path(filename).extension().c_str();
+            wxString extension = fs::path(filename.wx_str()).extension().c_str();
             wxString name = filename.substr(0, filename.length() - extension.length());
             filename = wxString::Format("%s(%d)%s", name, vecFiles.size() + 1, extension).ToStdString();
         }
@@ -8152,43 +8382,49 @@ void Plater::import_model_id(wxString download_info)
         }
 
         //target_path /= (boost::format("%1%_%2%.3mf") % filename % unique).str();
-        target_path /= fs::path(wxString(filename).wc_str());
+        target_path /= fs::path(filename.wc_str());
 
         fs::path tmp_path = target_path;
         tmp_path += format(".%1%", ".download");
 
-        auto url = download_url;
-        auto http = Http::get(url);
-        http.on_progress([&percent, &cont, &msg](Http::Progress progress, bool& cancel) {
-            if (!cont) cancel = true;
-            if (progress.dltotal != 0) {
-                percent = progress.dlnow * 100 / progress.dltotal;
-            }
-            msg = wxString::Format(_L("Project downloaded %d%%"), percent);
-            })
-            .on_error([&msg, &cont](std::string body, std::string error, unsigned http_status) {
-                (void)body;
-                BOOST_LOG_TRIVIAL(error) << format("Error getting: `%1%`: HTTP %2%, %3%",
-                    body,
-                    http_status,
-                    error);
-                msg = wxString::Format("Download Failed! body=%s, error=%s, status=%d", body, error, http_status);
-                cont = false;
-                return;
+
+        auto http = Http::get(download_url.ToStdString());
+
+        while (cont && retry_count < max_retries) {
+            retry_count++;
+            http.on_progress([&percent, &cont, &msg](Http::Progress progress, bool& cancel) {
+                    if (!cont) cancel = true;
+                    if (progress.dltotal != 0) {
+                        percent = progress.dlnow * 100 / progress.dltotal;
+                    }
+                    msg = wxString::Format(_L("Project downloaded %d%%"), percent);
+                })
+                .on_error([&msg, &cont, &retry_count, max_retries](std::string body, std::string error, unsigned http_status) {
+                    (void)body;
+                    BOOST_LOG_TRIVIAL(error) << format("Error getting: `%1%`: HTTP %2%, %3%",
+                        body,
+                        http_status,
+                        error);
+
+                    if (retry_count == max_retries) {
+                        msg = _L("Importing to Bambu Studio failed. Please download the file and manually import it.");
+                        cont = false;
+                    }
                 })
                 .on_complete([&cont, &download_ok, tmp_path, target_path](std::string body, unsigned /* http_status */) {
-                    fs::fstream file(tmp_path, std::ios::out | std::ios::binary | std::ios::trunc);
-                    file.write(body.c_str(), body.size());
-                    file.close();
-                    fs::rename(tmp_path, target_path);
-                    cont = false;
-                    download_ok = true;
-                    })
-                    .perform_sync();
+                        fs::fstream file(tmp_path, std::ios::out | std::ios::binary | std::ios::trunc);
+                        file.write(body.c_str(), body.size());
+                        file.close();
+                        fs::rename(tmp_path, target_path);
+                        cont = false;
+                        download_ok = true;
+                }).perform_sync();
 
-                    // for break while
-                    cont = false;
-        });
+                // for break while
+                //cont = false;
+        }
+
+    });
 
     while (cont && cont_dlg) {
         wxMilliSleep(50);
@@ -8210,8 +8446,7 @@ void Plater::import_model_id(wxString download_info)
     if (download_ok) {
         BOOST_LOG_TRIVIAL(trace) << "import_model_id: target_path = " << target_path.string();
         /* load project */
-        this->load_project(encode_path(target_path.string().c_str()));
-
+        this->load_project(target_path.wstring());
         /*BBS set project info after load project, project info is reset in load project */
         //p->project.project_model_id = model_id;
         //p->project.project_design_id = design_id;
@@ -8221,10 +8456,15 @@ void Plater::import_model_id(wxString download_info)
         }
 
         // show save new project
-        p->set_project_filename(wxString(filename));
+        p->set_project_filename(target_path.wstring());
+        p->notification_manager->push_import_finished_notification(target_path.string(), target_path.parent_path().string(), false);
     }
     else {
-        if (!msg.empty()) wxMessageBox(msg);
+        if (!msg.empty()) {
+            MessageDialog msg_wingow(nullptr, msg, wxEmptyString, wxICON_WARNING | wxOK);
+            msg_wingow.SetSize(wxSize(FromDIP(480), -1));
+            msg_wingow.ShowModal();
+        }
         return;
     }
 }
@@ -8337,54 +8577,139 @@ void Plater::calib_pa(const Calib_Params &params)
     const auto calib_pa_name = wxString::Format(L"Pressure Advance Test");
     new_project(false, false, calib_pa_name);
     wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
-    if (params.mode == CalibMode::Calib_PA_Line) {
-        add_model(false, Slic3r::resources_dir() + "/calib/pressure_advance/pressure_advance_test.stl");
-    } else {
-        add_model(false, Slic3r::resources_dir() + "/calib/pressure_advance/tower_with_seam.stl");
-        auto print_config    = &wxGetApp().preset_bundle->prints.get_edited_preset().config;
-        auto printer_config  = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
-        auto filament_config = &wxGetApp().preset_bundle->filaments.get_edited_preset().config;
-        filament_config->set_key_value("slow_down_layer_time", new ConfigOptionInts{1});
-        // todo: for 3rd printer
-        //print_config->set_key_value("default_jerk", new ConfigOptionFloat(1.0f));
-        //print_config->set_key_value("outer_wall_jerk", new ConfigOptionFloat(1.0f));
-        //print_config->set_key_value("inner_wall_jerk", new ConfigOptionFloat(1.0f));
-        if (print_config->option<ConfigOptionEnum<PerimeterGeneratorType>>("wall_generator")->value == PerimeterGeneratorType::Arachne)
-            print_config->set_key_value("wall_transition_angle", new ConfigOptionFloat(25));
-        model().objects[0]->config.set_key_value("seam_position", new ConfigOptionEnum<SeamPosition>(spRear));
-
-        changed_objects({0});
-        wxGetApp().get_tab(Preset::TYPE_PRINT)->update_dirty();
-        wxGetApp().get_tab(Preset::TYPE_FILAMENT)->update_dirty();
-        wxGetApp().get_tab(Preset::TYPE_PRINTER)->update_dirty();
-        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
-        wxGetApp().get_tab(Preset::TYPE_FILAMENT)->reload_config();
-        wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
-
-        auto new_height = std::ceil((params.end - params.start) / params.step) + 1;
-        auto obj_bb     = model().objects[0]->bounding_box();
-        if (new_height < obj_bb.size().z()) {
-            std::array<Vec3d, 4> plane_pts = get_cut_plane(obj_bb, new_height);
-            cut(0, 0, plane_pts, ModelObjectCutAttribute::KeepLower);
-        }
-
-        // automatic selection of added objects
-        // update printable state for new volumes on canvas3D
-        wxGetApp().plater()->canvas3D()->update_instance_printable_state_for_objects({0});
-
-        Selection &selection = p->view3D->get_canvas3d()->get_selection();
-        selection.clear();
-        selection.add_object(0, false);
-
-        // BBS: update object list selection
-        p->sidebar->obj_list()->update_selections();
-        selection.notify_instance_update(-1, -1);
-        if (p->view3D->get_canvas3d()->get_gizmos_manager().is_enabled())
-            // this is required because the selected object changed and the flatten on face an sla support gizmos need to be updated accordingly
-            p->view3D->get_canvas3d()->update_gizmos_on_off_state();
+    switch (params.mode) {
+        case CalibMode::Calib_PA_Line:
+            add_model(false, Slic3r::resources_dir() + "/calib/pressure_advance/pressure_advance_test.stl");
+            break;
+        case CalibMode::Calib_PA_Pattern:
+            _calib_pa_pattern(params);
+            break;
+        case CalibMode::Calib_PA_Tower:
+            _calib_pa_tower(params);
+            break;
+        default: break;
     }
+
     p->background_process.fff_print()->set_calib_params(params);
 }
+
+void Plater::_calib_pa_pattern(const Calib_Params &params)
+{
+    // add "handle" cube
+    sidebar().obj_list()->load_generic_subobject("Cube", ModelVolumeType::INVALID);
+    orient();
+    changed_objects({0});
+    _calib_pa_select_added_objects();
+
+    const DynamicPrintConfig &printer_config  = wxGetApp().preset_bundle->printers.get_edited_preset().config;
+    DynamicPrintConfig &      print_config    = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    float                    nozzle_diameter = printer_config.option<ConfigOptionFloats>("nozzle_diameter")->get_at(0);
+
+    for (const auto opt : SuggestedConfigCalibPAPattern().float_pairs) {
+        print_config.set_key_value(opt.first, new ConfigOptionFloat(opt.second));
+    }
+    print_config.set_key_value("outer_wall_speed",
+        new ConfigOptionFloat(CalibPressureAdvance::find_optimal_PA_speed(
+            wxGetApp().preset_bundle->full_config(), print_config.get_abs_value("line_width"),
+            print_config.get_abs_value("layer_height"), 0)));
+
+    for (const auto opt : SuggestedConfigCalibPAPattern().nozzle_ratio_pairs) {
+        print_config.set_key_value(opt.first, new ConfigOptionFloat(nozzle_diameter * opt.second / 100));
+    }
+
+    for (const auto opt : SuggestedConfigCalibPAPattern().int_pairs) {
+        print_config.set_key_value(opt.first, new ConfigOptionInt(opt.second));
+    }
+
+    print_config.set_key_value(SuggestedConfigCalibPAPattern().brim_pair.first,
+        new ConfigOptionEnum<BrimType>(SuggestedConfigCalibPAPattern().brim_pair.second));
+
+    wxGetApp().get_tab(Preset::TYPE_PRINT)->update_dirty();
+    wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+
+    const DynamicPrintConfig    full_config    = wxGetApp().preset_bundle->full_config();
+    PresetBundle *              preset_bundle  = wxGetApp().preset_bundle;
+    const bool                  is_bbl_machine = preset_bundle->printers.get_edited_preset().has_lidar(preset_bundle);
+    const Vec3d                 plate_origin   = get_partplate_list().get_current_plate_origin();
+    CalibPressureAdvancePattern pa_pattern(params, full_config, is_bbl_machine, model(), plate_origin);
+
+    // scale cube to suit test
+    GizmoObjectManipulation &giz_obj_manip = p->view3D->get_canvas3d()->get_gizmos_manager().get_object_manipulation();
+    giz_obj_manip.set_uniform_scaling(true);
+    giz_obj_manip.on_change("size", 0, pa_pattern.handle_xy_size());
+    giz_obj_manip.set_uniform_scaling(false);
+    giz_obj_manip.on_change("size", 2, pa_pattern.max_layer_z());
+    // start with pattern centered on plate
+    center_selection();
+    const Vec3d plate_center = get_partplate_list().get_curr_plate()->get_center_origin();
+    giz_obj_manip.on_change("position", 0, plate_center.x() - (pa_pattern.print_size_x() / 2));
+    giz_obj_manip.on_change("position", 1, plate_center.y() - (pa_pattern.print_size_y() / 2) - pa_pattern.handle_spacing());
+
+    pa_pattern.generate_custom_gcodes(full_config, is_bbl_machine, model(), plate_origin);
+    model().calib_pa_pattern = std::make_unique<CalibPressureAdvancePattern>(pa_pattern);
+    changed_objects({0});
+}
+
+void Plater::_calib_pa_tower(const Calib_Params &params)
+{
+    add_model(false, Slic3r::resources_dir() + "/calib/pressure_advance/tower_with_seam.stl");
+
+    auto print_config    = &wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    auto printer_config  = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
+    auto filament_config = &wxGetApp().preset_bundle->filaments.get_edited_preset().config;
+
+    const float nozzle_diameter = printer_config->option<ConfigOptionFloats>("nozzle_diameter")->get_at(0);
+
+    filament_config->set_key_value("slow_down_layer_time", new ConfigOptionInts{1});
+    //print_config->set_key_value("default_jerk", new ConfigOptionFloat(1.0f));
+    //print_config->set_key_value("outer_wall_jerk", new ConfigOptionFloat(1.0f));
+    //print_config->set_key_value("inner_wall_jerk", new ConfigOptionFloat(1.0f));
+    auto full_config = wxGetApp().preset_bundle->full_config();
+    auto wall_speed  = CalibPressureAdvance::find_optimal_PA_speed(full_config, full_config.get_abs_value("line_width"),
+                                                                  full_config.get_abs_value("layer_height"), 0);
+    print_config->set_key_value("outer_wall_speed", new ConfigOptionFloat(wall_speed));
+    print_config->set_key_value("inner_wall_speed", new ConfigOptionFloat(wall_speed));
+    // print_config->set_key_value("wall_generator", new ConfigOptionEnum<PerimeterGeneratorType>(PerimeterGeneratorType::Classic));
+    const auto _wall_generator = print_config->option<ConfigOptionEnum<PerimeterGeneratorType>>("wall_generator");
+    if (_wall_generator->value == PerimeterGeneratorType::Arachne) print_config->set_key_value("wall_transition_angle", new ConfigOptionFloat(25));
+    model().objects[0]->config.set_key_value("seam_position", new ConfigOptionEnum<SeamPosition>(spRear));
+
+    changed_objects({0});
+    wxGetApp().get_tab(Preset::TYPE_PRINT)->update_dirty();
+    wxGetApp().get_tab(Preset::TYPE_FILAMENT)->update_dirty();
+    wxGetApp().get_tab(Preset::TYPE_PRINTER)->update_dirty();
+    wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    wxGetApp().get_tab(Preset::TYPE_FILAMENT)->reload_config();
+    wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
+
+    auto new_height = std::ceil((params.end - params.start) / params.step) + 1;
+    auto obj_bb     = model().objects[0]->bounding_box();
+    if (new_height < obj_bb.size().z()) {
+        std::array<Vec3d, 4> plane_pts = get_cut_plane(obj_bb, new_height);
+        cut(0, 0, plane_pts, ModelObjectCutAttribute::KeepLower);
+    }
+
+    _calib_pa_select_added_objects();
+}
+
+void Plater::_calib_pa_select_added_objects()
+{
+    // update printable state for new volumes on canvas3D
+    wxGetApp().plater()->canvas3D()->update_instance_printable_state_for_objects({0});
+
+    Selection &selection = p->view3D->get_canvas3d()->get_selection();
+    selection.clear();
+    selection.add_object(0, false);
+
+    // BBS: update object list selection
+    p->sidebar->obj_list()->update_selections();
+    selection.notify_instance_update(-1, -1);
+    if (p->view3D->get_canvas3d()->get_gizmos_manager().is_enabled()) {
+        // this is required because the selected object changed and the flatten on face an sla support gizmos need to be updated accordingly
+        p->view3D->get_canvas3d()->update_gizmos_on_off_state();
+    }
+}
+
 
 void Plater::calib_flowrate(int pass)
 {
@@ -8432,8 +8757,9 @@ void Plater::calib_flowrate(int pass)
     for (auto _obj : model().objects) {
         _obj->ensure_on_bed();
         _obj->config.set_key_value("wall_loops", new ConfigOptionInt(3));
-        _obj->config.set_key_value("only_one_wall_top", new ConfigOptionBool(true));
+        _obj->config.set_key_value("top_one_wall_type", new ConfigOptionEnum<TopOneWallType>(TopOneWallType::Topmost));
         _obj->config.set_key_value("sparse_infill_density", new ConfigOptionPercent(35));
+        _obj->config.set_key_value("top_area_threshold", new ConfigOptionPercent(100));
         _obj->config.set_key_value("bottom_shell_layers", new ConfigOptionInt(1));
         _obj->config.set_key_value("top_shell_layers", new ConfigOptionInt(5));
         _obj->config.set_key_value("detect_thin_wall", new ConfigOptionBool(true));
@@ -8698,6 +9024,7 @@ void Plater::load_gcode()
 //BBS: remove GCodeViewer as seperate APP logic
 void Plater::load_gcode(const wxString& filename)
 {
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " entry and filename: " << filename;
     if (! is_gcode_file(into_u8(filename))
         || (m_last_loaded_gcode == filename && m_only_gcode)
         )
@@ -8750,6 +9077,20 @@ void Plater::load_gcode(const wxString& filename)
 
     current_print.apply(this->model(), wxGetApp().preset_bundle->full_config());
 
+    //BBS: add cost info when drag in gcode
+    auto& ps = current_result->print_statistics;
+    double total_cost = 0.0;
+    for (auto& volumes_map : { ps.volumes_per_extruder,ps.flush_per_filament ,ps.wipe_tower_volumes_per_extruder }) {
+        for (auto volume : volumes_map) {
+            size_t extruder_id = volume.first;
+            double density = current_result->filament_densities.at(extruder_id);
+            double cost = current_result->filament_costs.at(extruder_id);
+            double weight = volume.second * density * 0.001;
+            total_cost += weight * cost * 0.001;
+        }
+    }
+    current_print.print_statistics().total_cost = total_cost;
+
     current_print.set_gcode_file_ready();
 
     // show results
@@ -8762,9 +9103,10 @@ void Plater::load_gcode(const wxString& filename)
         MessageDialog(this, _L("The selected file") + ":\n" + filename + "\n" + _L("does not contain valid gcode."),
             wxString(GCODEVIEWER_APP_NAME) + " - " + _L("Error occurs while loading G-code file"), wxCLOSE | wxICON_WARNING | wxCENTRE).ShowModal();
         set_project_filename(DEFAULT_PROJECT_NAME);
-    }
-    else
+    } else {
         set_project_filename(filename);
+    }
+        
 }
 
 void Plater::reload_gcode_from_disk()
@@ -9378,6 +9720,7 @@ int Plater::get_3mf_file_count(std::vector<fs::path> paths)
 
 void Plater::add_file()
 {
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " entry";
     wxArrayString input_files;
     wxGetApp().import_model(this, input_files);
     if (input_files.empty()) return;
@@ -9418,7 +9761,13 @@ void Plater::add_file()
 
     case LoadFilesType::SingleOther: {
         Plater::TakeSnapshot snapshot(this, snapshot_label);
-        if (!load_files(paths, LoadStrategy::LoadModel, false).empty()) { wxGetApp().mainframe->update_title(); }
+        if (!load_files(paths, LoadStrategy::LoadModel, false).empty()) {
+            if (get_project_name() == _L("Untitled") && paths.size() > 0) {
+                p->set_project_filename(wxString::FromUTF8(paths[0].string()));
+
+            }
+            wxGetApp().mainframe->update_title();
+        }
         break;
     }
     case LoadFilesType::Multiple3MF:
@@ -9434,6 +9783,9 @@ void Plater::add_file()
     case LoadFilesType::MultipleOther: {
         Plater::TakeSnapshot snapshot(this, snapshot_label);
         if (!load_files(paths, LoadStrategy::LoadModel, true).empty()) {
+            if (get_project_name() == _L("Untitled") && paths.size() > 0) {
+                p->set_project_filename(wxString::FromUTF8(paths[0].string()));
+            }
             wxGetApp().mainframe->update_title();
         }
         break;
@@ -9452,22 +9804,23 @@ void Plater::add_file()
 
         open_3mf_file(first_file[0]);
         load_files(tmf_file, LoadStrategy::LoadModel);
-        if (!load_files(other_file, LoadStrategy::LoadModel, false).empty()) { wxGetApp().mainframe->update_title(); }
+        if (!load_files(other_file, LoadStrategy::LoadModel, false).empty()) { wxGetApp().mainframe->update_title();}
         break;
     default:break;
     }
 }
 
-void Plater::update(bool conside_update_flag)
+void Plater::update(bool conside_update_flag, bool force_background_processing_update)
 {
+    unsigned int flag = force_background_processing_update ? (unsigned int)Plater::priv::UpdateParams::FORCE_BACKGROUND_PROCESSING_UPDATE : 0;
     if (conside_update_flag) {
         if (need_update()) {
-            p->update();
+            p->update(flag);
             p->set_need_update(false);
         }
     }
     else
-        p->update();
+        p->update(flag);
 }
 
 void Plater::object_list_changed() { p->object_list_changed(); }
@@ -9829,6 +10182,26 @@ void Plater::segment(size_t obj_idx, size_t instance_idx, double smoothing_alpha
     }
 }
 
+void Plater::apply_cut_object_to_model(size_t obj_idx, const ModelObjectPtrs &cut_objects)
+{
+    model().delete_object(obj_idx);
+    sidebar().obj_list()->delete_object_from_list(obj_idx);
+
+    // suppress to call selection update for Object List to avoid call of early Gizmos on/off update
+    p->load_model_objects(cut_objects, false, false);
+
+    // now process all updates of the 3d scene
+    update();
+    // Update InfoItems in ObjectList after update() to use of a correct value of the GLCanvas3D::is_sinking(),
+    // which is updated after a view3D->reload_scene(false, flags & (unsigned int)UpdateParams::FORCE_FULL_SCREEN_REFRESH) call
+    for (size_t idx = 0; idx < p->model.objects.size(); idx++) wxGetApp().obj_list()->update_info_items(idx);
+
+    Selection &selection = p->get_selection();
+    size_t     last_id   = p->model.objects.size() - 1;
+    for (size_t i = 0; i < cut_objects.size(); ++i)
+        selection.add_object((unsigned int) (last_id - i), i == 0);
+}
+
 // BBS
 void Plater::merge(size_t obj_idx, std::vector<int>& vol_indeces)
 {
@@ -9902,7 +10275,7 @@ void Plater::export_gcode(bool prefer_removable)
     fs::path output_path;
     {
         std::string ext = default_output_file.extension().string();
-        wxFileDialog dlg(this, (printer_technology() == ptFFF) ? _L("Save G-code file as:") : _devL("Save SLA file as:"),
+        wxFileDialog dlg(this, (printer_technology() == ptFFF) ? _L("Save G-code file as:") : _L("Save SLA file as:"),
             start_dir,
             from_path(default_output_file.filename()),
             GUI::file_wildcards((printer_technology() == ptFFF) ? FT_GCODE : FT_SL1, ext),
@@ -9911,8 +10284,8 @@ void Plater::export_gcode(bool prefer_removable)
         if (dlg.ShowModal() == wxID_OK) {
             output_path = into_path(dlg.GetPath());
             while (has_illegal_filename_characters(output_path.filename().string())) {
-                show_error(this, _devL("The provided file name is not valid.") + "\n" +
-                    _devL("The following characters are not allowed by a FAT file system:") + " <>:/\\|?*\"");
+                show_error(this, _L("The provided file name is not valid.") + "\n" +
+                    _L("The following characters are not allowed by a FAT file system:") + " <>:/\\|?*\"");
                 dlg.SetFilename(from_path(output_path.filename()));
                 if (dlg.ShowModal() == wxID_OK)
                     output_path = into_path(dlg.GetPath());
@@ -10106,11 +10479,20 @@ TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, st
 
 // BBS export with/without boolean, however, stil merge mesh
 #define EXPORT_WITH_BOOLEAN 0
-void Plater::export_stl(bool extended, bool selection_only)
+void Plater::export_stl(bool extended, bool selection_only, bool multi_stls)
 {
     if (p->model.objects.empty()) { return; }
 
-    wxString path = p->get_export_file(FT_STL);
+    wxString path;
+    if (multi_stls) {
+        wxDirDialog dlg(this, _L("Choose a directory"), from_u8(wxGetApp().app_config->get_last_dir()),
+                        wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
+        if (dlg.ShowModal() == wxID_OK) {
+            path = dlg.GetPath() + "/";
+        }
+    } else {
+        path = p->get_export_file(FT_STL);
+    }
     if (path.empty()) { return; }
     const std::string path_u8 = into_u8(path);
 
@@ -10233,6 +10615,14 @@ void Plater::export_stl(bool extended, bool selection_only)
     else
         mesh_to_export = mesh_to_export_sla;
 
+    auto get_save_file = [](std::string const & dir, std::string const & name) {
+        auto path = dir + name + ".stl";
+        int n = 1;
+        while (boost::filesystem::exists(path))
+            path = dir + name + "(" + std::to_string(n++) + ").stl";
+        return path;
+    };
+
     TriangleMesh mesh;
     if (selection_only) {
         if (selection.is_single_full_object()) {
@@ -10248,18 +10638,36 @@ void Plater::export_stl(bool extended, bool selection_only)
 
             if (model_object->instances.size() == 1) mesh.translate(-model_object->origin_translation.cast<float>());
         }
-        else if (selection.is_multiple_full_object()) {
+        else if (selection.is_multiple_full_object() && !multi_stls) {
             const std::set<std::pair<int, int>>& instances_idxs = p->get_selection().get_selected_object_instances();
             for (const std::pair<int, int>& i : instances_idxs) {
                 ModelObject* object = p->model.objects[i.first];
                 mesh.merge(mesh_to_export(*object, i.second));
             }
         }
+        else if (selection.is_multiple_full_object() && multi_stls) {
+            const std::set<std::pair<int, int>> &instances_idxs = p->get_selection().get_selected_object_instances();
+            for (const std::pair<int, int> &i : instances_idxs) {
+                ModelObject *object = p->model.objects[i.first];
+                auto mesh = mesh_to_export(*object, i.second);
+                mesh.translate(-object->origin_translation.cast<float>());
+
+                Slic3r::store_stl(get_save_file(path_u8, object->name).c_str(), &mesh, true);
+            }
+            return;
+        }
     }
-    else {
+    else if (!multi_stls) {
         for (const ModelObject* o : p->model.objects) {
             mesh.merge(mesh_to_export(*o, -1));
         }
+    } else {
+        for (const ModelObject* o : p->model.objects) {
+            auto mesh = mesh_to_export(*o, -1);
+            mesh.translate(-o->origin_translation.cast<float>());
+            Slic3r::store_stl(get_save_file(path_u8, o->name).c_str(), &mesh, true);
+        }
+        return;
     }
 
     Slic3r::store_stl(path_u8.c_str(), &mesh, true);
@@ -10408,9 +10816,17 @@ int Plater::export_3mf(const boost::filesystem::path& output_path, SaveStrategy 
 
     // get type and color for platedata
     auto* filament_color = dynamic_cast<const ConfigOptionStrings*>(cfg.option("filament_colour"));
+    auto* nozzle_diameter_option = dynamic_cast<const ConfigOptionFloats*>(cfg.option("nozzle_diameter"));
+    std::string nozzle_diameter_str;
+    if (nozzle_diameter_option)
+        nozzle_diameter_str = nozzle_diameter_option->serialize();
+
+    std::string printer_model_id = preset_bundle.printers.get_edited_preset().get_printer_type(&preset_bundle);
 
     for (int i = 0; i < plate_data_list.size(); i++) {
         PlateData *plate_data = plate_data_list[i];
+        plate_data->printer_model_id = printer_model_id;
+        plate_data->nozzle_diameters = nozzle_diameter_str;
         for (auto it = plate_data->slice_filaments_info.begin(); it != plate_data->slice_filaments_info.end(); it++) {
             std::string display_filament_type;
             it->type  = cfg.get_filament_type(display_filament_type, it->id);
@@ -10457,6 +10873,7 @@ int Plater::export_3mf(const boost::filesystem::path& output_path, SaveStrategy 
         if (!(store_params.strategy & SaveStrategy::Silence)) {
             // Success
             p->set_project_filename(path);
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " call set_project_filename: " << path;
         }
     }
     else {
@@ -10553,6 +10970,19 @@ void Plater::reslice()
 
     // Stop arrange and (or) optimize rotation tasks.
     this->stop_jobs();
+
+    // softfever: regenerate CalibPressureAdvancePattern custom G-code to apply changes
+    if (model().calib_pa_pattern) {
+        PresetBundle* preset_bundle = wxGetApp().preset_bundle;
+
+        model().calib_pa_pattern->generate_custom_gcodes(
+            wxGetApp().preset_bundle->full_config(),
+            preset_bundle->printers.get_edited_preset().is_bbl_vendor_preset(preset_bundle),
+            model(),
+            get_partplate_list().get_current_plate_origin()
+        );
+    }
+
 
     if (printer_technology() == ptSLA) {
         for (auto& object : model().objects)
@@ -10828,24 +11258,24 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
         try {
             json          j;
             switch (dlg.post_action()) {
-            case PrintHostPostUploadAction::None: 
-                j["post_action"] = "Upload"; 
+            case PrintHostPostUploadAction::None:
+                j["post_action"] = "Upload";
                 break;
-            case PrintHostPostUploadAction::StartPrint: 
-                j["post_action"] = "StartPrint"; 
+            case PrintHostPostUploadAction::StartPrint:
+                j["post_action"] = "StartPrint";
                 break;
-            case PrintHostPostUploadAction::StartSimulation: 
-                j["post_action"] = "StartSimulation"; 
+            case PrintHostPostUploadAction::StartSimulation:
+                j["post_action"] = "StartSimulation";
                 break;
             }
 
             PresetBundle *preset_bundle = wxGetApp().preset_bundle;
-            if (preset_bundle) { 
-                j["gcode_printer_model"] = preset_bundle->printers.get_edited_preset().get_printer_type(preset_bundle); 
+            if (preset_bundle) {
+                j["gcode_printer_model"] = preset_bundle->printers.get_edited_preset().get_printer_type(preset_bundle);
             }
 
-            if (physical_printer_config) { 
-                j["printer_preset"] = physical_printer_config->opt_string("inherits"); 
+            if (physical_printer_config) {
+                j["printer_preset"] = physical_printer_config->opt_string("inherits");
             }
 
             NetworkAgent *agent = wxGetApp().getAgent();
@@ -10940,7 +11370,7 @@ void Plater::print_job_finished(wxCommandEvent &evt)
         p->enter_prepare_mode();
     }
 
-    
+
     Slic3r::DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager();
     if (!dev) return;
 
@@ -11070,6 +11500,12 @@ void Plater::on_filaments_change(size_t num_filaments)
     update_filament_colors_in_full_config();
     sidebar().on_filaments_change(num_filaments);
     sidebar().obj_list()->update_objects_list_filament_column(num_filaments);
+
+    Slic3r::GUI::PartPlateList &plate_list = get_partplate_list();
+    for (int i = 0; i < plate_list.get_plate_count(); ++i) {
+        PartPlate* part_plate = plate_list.get_plate(i);
+        part_plate->update_first_layer_print_sequence(num_filaments);
+    }
 
     for (ModelObject* mo : wxGetApp().model().objects) {
         for (ModelVolume* mv : mo->volumes) {
@@ -11329,7 +11765,7 @@ void Plater::update_print_error_info(int code, std::string msg, std::string extr
     if (p->main_frame->m_calibration)
         p->main_frame->m_calibration->update_print_error_info(code, msg, extra);
 }
-    
+
 wxString Plater::get_project_filename(const wxString& extension) const
 {
     return p->get_project_filename(extension);
@@ -11610,7 +12046,7 @@ void Plater::clone_selection()
     long res = wxGetNumberFromUser("",
         _L("Clone"),
         _L("Number of copies:"),
-        1, 0, 100, this);
+        1, 0, 1000, this);
     wxString msg;
     if (res == -1) {
         msg = _L("Invalid number");
@@ -11943,6 +12379,70 @@ void Plater::validate_current_plate(bool& model_fits, bool& validate_error)
     return;
 }
 
+void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
+    int plate_index = evt.GetInt();
+    PlateSettingsDialog dlg(this, _L("Plate Settings"), evt.GetString() == "only_first_layer_sequence");
+    PartPlate* curr_plate = p->partplate_list.get_curr_plate();
+    dlg.sync_bed_type(curr_plate->get_bed_type());
+
+    auto curr_print_seq = curr_plate->get_print_seq();
+    if (curr_print_seq != PrintSequence::ByDefault) {
+        dlg.sync_print_seq(int(curr_print_seq) + 1);
+    }
+    else
+        dlg.sync_print_seq(0);
+
+    auto first_layer_print_seq = curr_plate->get_first_layer_print_sequence();
+    if (first_layer_print_seq.empty())
+        dlg.sync_first_layer_print_seq(0);
+    else
+        dlg.sync_first_layer_print_seq(1, curr_plate->get_first_layer_print_sequence());
+
+    dlg.sync_spiral_mode(curr_plate->get_spiral_vase_mode(), !curr_plate->has_spiral_mode_config());
+
+    dlg.Bind(EVT_SET_BED_TYPE_CONFIRM, [this, plate_index, &dlg](wxCommandEvent& e) {
+        PartPlate* curr_plate = p->partplate_list.get_curr_plate();
+        BedType old_bed_type = curr_plate->get_bed_type();
+        auto bt_sel = BedType(dlg.get_bed_type_choice());
+        if (old_bed_type != bt_sel) {
+            curr_plate->set_bed_type(bt_sel);
+            update_project_dirty_from_presets();
+            set_plater_dirty(true);
+        }
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select bed type %1% for plate %2% at plate side") % bt_sel % plate_index;
+
+        if (dlg.get_first_layer_print_seq_choice() != 0)
+            curr_plate->set_first_layer_print_sequence(dlg.get_first_layer_print_seq());
+        else
+            curr_plate->set_first_layer_print_sequence({});
+
+        int ps_sel = dlg.get_print_seq_choice();
+        if (ps_sel != 0)
+            curr_plate->set_print_seq(PrintSequence(ps_sel - 1));
+        else
+            curr_plate->set_print_seq(PrintSequence::ByDefault);
+
+        int spiral_sel = dlg.get_spiral_mode_choice();
+        if (spiral_sel == 1) {
+            curr_plate->set_spiral_vase_mode(true, false);
+        }
+        else if (spiral_sel == 2) {
+            curr_plate->set_spiral_vase_mode(false, false);
+        }
+        else {
+            curr_plate->set_spiral_vase_mode(false, true);
+        }
+
+        update_project_dirty_from_presets();
+        set_plater_dirty(true);
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select print sequence %1% for plate %2% at plate side") % ps_sel % plate_index;
+        auto plate_config = *(curr_plate->config());
+        wxGetApp().plater()->config_change_notification(plate_config, std::string("print_sequence"));
+        update();
+        wxGetApp().obj_list()->update_selections();
+        });
+    dlg.ShowModal();
+}
 
 //BBS: select Plate by hover_id
 int Plater::select_plate_by_hover_id(int hover_id, bool right_click, bool isModidyPlateName)
@@ -12084,42 +12584,10 @@ int Plater::select_plate_by_hover_id(int hover_id, bool right_click, bool isModi
         //set the plate type
         ret = select_plate(plate_index);
         if (!ret) {
-            PlateSettingsDialog dlg(this, wxID_ANY, _L("Plate Settings"));
-            PartPlate* curr_plate = p->partplate_list.get_curr_plate();
-            dlg.sync_bed_type(curr_plate->get_bed_type());
-
-            auto curr_print_seq = curr_plate->get_print_seq();
-            if (curr_print_seq != PrintSequence::ByDefault) {
-                dlg.sync_print_seq(int(curr_print_seq) + 1);
-            }
-            else
-                dlg.sync_print_seq(0);
-
-
-            dlg.Bind(EVT_SET_BED_TYPE_CONFIRM, [this, plate_index, &dlg](wxCommandEvent& e) {
-                PartPlate *curr_plate = p->partplate_list.get_curr_plate();
-                BedType old_bed_type = curr_plate->get_bed_type();
-                auto bt_sel = BedType(dlg.get_bed_type_choice());
-                if (old_bed_type != bt_sel) {
-                    curr_plate->set_bed_type(bt_sel);
-                    update_project_dirty_from_presets();
-                    set_plater_dirty(true);
-                }
-                BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select bed type %1% for plate %2% at plate side")%bt_sel %plate_index;
-
-                int ps_sel = dlg.get_print_seq_choice();
-                if (ps_sel != 0)
-                    curr_plate->set_print_seq(PrintSequence(ps_sel - 1));
-                else
-                    curr_plate->set_print_seq(PrintSequence::ByDefault);
-                update_project_dirty_from_presets();
-                set_plater_dirty(true);
-                BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select print sequence %1% for plate %2% at plate side")%ps_sel %plate_index;
-                auto plate_config = *(curr_plate->config());
-                wxGetApp().plater()->config_change_notification(plate_config, std::string("print_sequence"));
-                update();
-                });
-            dlg.ShowModal();
+            wxCommandEvent evt(EVT_OPEN_PLATESETTINGSDIALOG);
+            evt.SetInt(plate_index);
+            evt.SetEventObject(this);
+            wxPostEvent(this, evt);
 
             this->schedule_background_process();
         }
@@ -12134,16 +12602,15 @@ int Plater::select_plate_by_hover_id(int hover_id, bool right_click, bool isModi
         if (!ret) {
             PlateNameEditDialog dlg(this, wxID_ANY, _L("Edit Plate Name"));
             PartPlate *         curr_plate = p->partplate_list.get_curr_plate();
-   
+
             wxString curr_plate_name = from_u8(curr_plate->get_plate_name());
             dlg.set_plate_name(curr_plate_name);
 
-            dlg.ShowModal();
-
-            wxString dlg_plate_name = dlg.get_plate_name();
-            curr_plate->set_plate_name(dlg_plate_name.ToUTF8().data());
-
-            this->schedule_background_process();
+            int result=dlg.ShowModal();
+            if (result == wxID_YES) {
+                wxString dlg_plate_name = dlg.get_plate_name();
+                curr_plate->set_plate_name(dlg_plate_name.ToUTF8().data());
+            }
         } else {
             BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << "can not select plate %1%" << plate_index;
             ret = -1;
@@ -12403,6 +12870,12 @@ NotificationManager * Plater::get_notification_manager()
     return p->notification_manager.get();
 }
 
+DailyTipsWindow* Plater::get_dailytips() const
+{
+    static DailyTipsWindow* dailytips_win = new DailyTipsWindow();
+    return dailytips_win;
+}
+
 const NotificationManager * Plater::get_notification_manager() const
 {
     return p->notification_manager.get();
@@ -12549,7 +13022,7 @@ bool Plater::PopupMenu(wxMenu *menu, const wxPoint& pos)
     SuppressBackgroundProcessingUpdate sbpu;
     // When tracking a pop-up menu, postpone error messages from the slicing result.
     m_tracking_popup_menu = true;
-    bool out = this->wxPanel::PopupMenu(menu, pos);
+    bool out = wxGetApp().mainframe->PopupMenu(menu, pos);
     m_tracking_popup_menu = false;
     if (! m_tracking_popup_menu_error_message.empty()) {
         // Don't know whether the CallAfter is necessary, but it should not hurt.

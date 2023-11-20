@@ -143,6 +143,14 @@ struct Http::priv
 	void http_perform();
 };
 
+// add a dummy log callback
+static int log_trace(CURL* handle, curl_infotype type,
+	char* data, size_t size,
+	void* userp)
+{
+	return 0;
+}
+
 Http::priv::priv(const std::string &url)
 	: curl(::curl_easy_init())
 	, form(nullptr)
@@ -161,12 +169,14 @@ Http::priv::priv(const std::string &url)
 
 	set_timeout_connect(DEFAULT_TIMEOUT_CONNECT);
     set_timeout_max(DEFAULT_TIMEOUT_MAX);
+	::curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, log_trace);
 	::curl_easy_setopt(curl, CURLOPT_URL, url.c_str());   // curl makes a copy internally
 	::curl_easy_setopt(curl, CURLOPT_USERAGENT, SLIC3R_APP_NAME "/" SLIC3R_VERSION);
 	::curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, &error_buffer.front());
 #ifdef __WINDOWS__
 	::curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_MAX_TLSv1_2);
 #endif
+	::curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
 	::curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
 	::curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
 }

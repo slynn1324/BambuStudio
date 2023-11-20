@@ -8,7 +8,6 @@ namespace Slic3r { namespace GUI {
 ConnectPrinterDialog::ConnectPrinterDialog(wxWindow *parent, wxWindowID id, const wxString &title, const wxPoint &pos, const wxSize &size, long style)
     : DPIDialog(parent, id, _L("ConnectPrinter(LAN)"), pos, size, style)
 {
-    init_bitmap();
     SetBackgroundColour(*wxWHITE);
     this->SetSizeHints(wxDefaultSize, wxDefaultSize);
 
@@ -86,7 +85,7 @@ ConnectPrinterDialog::ConnectPrinterDialog(wxWindow *parent, wxWindowID id, cons
     wxBoxSizer *sizer_diagram;
     sizer_diagram = new wxBoxSizer(wxHORIZONTAL);
 
-    m_bitmap_diagram = new wxStaticBitmap(this, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxSize(FromDIP(340), FromDIP(190)), 0);
+    m_bitmap_diagram = new wxStaticBitmap(this, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxSize(FromDIP(340), -1), 0);
     m_bitmap_diagram->SetBitmap(m_diagram_img);
     sizer_diagram->Add(m_bitmap_diagram);
 
@@ -117,19 +116,38 @@ void ConnectPrinterDialog::init_bitmap()
 {
     AppConfig *config = get_app_config();
     std::string language = config->get("language");
-    if (language == "zh_CN") {
-        m_diagram_bmp = create_scaled_bitmap("input_access_code_cn", nullptr, 190);
+
+    if (m_obj) {
+        std::string img_str = DeviceManager::get_printer_diagram_img(m_obj->printer_type);
+        if(img_str.empty()){img_str = "input_access_code_x1"; }
+
+        if (language == "zh_CN") {
+            m_diagram_bmp = create_scaled_bitmap(img_str+"_cn", nullptr, 190);
+        }
+        else {
+            m_diagram_bmp = create_scaled_bitmap(img_str+"_en", nullptr, 190);
+        }
     }
     else{
-        m_diagram_bmp = create_scaled_bitmap("input_access_code_en", nullptr, 190);
+        if (language == "zh_CN") {
+            m_diagram_bmp = create_scaled_bitmap("input_access_code_x1_cn", nullptr, 190);
+        }
+        else {
+            m_diagram_bmp = create_scaled_bitmap("input_access_code_x1_en", nullptr, 190);
+        }
     }
     m_diagram_img = m_diagram_bmp.ConvertToImage();
-    m_diagram_img.Rescale(FromDIP(340), FromDIP(190));    
+    auto bmp_size = m_diagram_bmp.GetSize();
+    float scale = (float)FromDIP(340) / (float)bmp_size.x;
+    m_diagram_img.Rescale(FromDIP(340), bmp_size.y * scale);
+    m_bitmap_diagram->SetBitmap(m_diagram_img);
+    Fit();
 }
 
 void ConnectPrinterDialog::set_machine_object(MachineObject* obj)
 {
     m_obj = obj;
+    init_bitmap();
 }
 
 void ConnectPrinterDialog::on_input_enter(wxCommandEvent& evt)

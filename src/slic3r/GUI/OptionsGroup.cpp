@@ -77,6 +77,7 @@ const t_field& OptionsGroup::build_field(const t_config_option_key& id, const Co
             case coEnums:
                 m_fields.emplace(id, Choice::Create<Choice>(this->ctrl_parent(), opt, id));
 				break;
+            case coPoint:
             case coPoints:
                 m_fields.emplace(id, PointCtrl::Create<PointCtrl>(this->ctrl_parent(), opt, id));
 				break;
@@ -232,26 +233,26 @@ void OptionsGroup::activate_line(Line& line)
 
     m_use_custom_ctrl_as_parent = false;
 
-	if (line.full_width && (
-		line.widget != nullptr ||
-		!line.get_extra_widgets().empty())
-		) {
-		// BBS: new layout
-		const auto h_sizer = new wxBoxSizer(wxHORIZONTAL);
-		sizer->Add(h_sizer, 1, wxEXPAND | wxALL, wxOSX ? 0 : 15);
+    if (line.full_width && (
+        line.widget != nullptr ||
+        !line.get_extra_widgets().empty())
+        ) {
+        // BBS: new layout
+        const auto h_sizer = new wxBoxSizer(wxHORIZONTAL);
+        sizer->Add(h_sizer, 1, wxEXPAND | wxALL, wxOSX ? 0 : 15);
         if (line.widget != nullptr) {
-			// description lines
-			h_sizer->Add(line.widget(this->ctrl_parent()), 0, wxEXPAND | wxLEFT, titleWidth * wxGetApp().em_unit());
+            // description lines
+            sizer->Add(line.widget(this->ctrl_parent()), 0, wxEXPAND | wxALL, wxOSX ? 0 : 15);
             return;
         }
-		if (!line.get_extra_widgets().empty()) {
+        if (!line.get_extra_widgets().empty()) {
             bool is_first_item = true;
-			for (auto extra_widget : line.get_extra_widgets()) {
-				h_sizer->Add(extra_widget(this->ctrl_parent()), is_first_item ? 1 : 0, wxLEFT, titleWidth * wxGetApp().em_unit());
-				is_first_item = false;
-			}
-			return;
-		}
+            for (auto extra_widget : line.get_extra_widgets()) {
+                h_sizer->Add(extra_widget(this->ctrl_parent()), is_first_item ? 1 : 0, wxLEFT, titleWidth * wxGetApp().em_unit());
+                is_first_item = false;
+            }
+            return;
+        }
     }
 
 	auto option_set = line.get_options();
@@ -1026,16 +1027,32 @@ boost::any ConfigOptionsGroup::get_config_value(const DynamicPrintConfig& config
 		ret = config.opt_int(opt_key, idx);
 		break;
 	case coEnum:
+        if (!config.has("first_layer_sequence_choice") && opt_key == "first_layer_sequence_choice") {
+            // reset to Auto value
+            ret = 0;
+            break;
+        }
+        if (!config.has("curr_bed_type") && opt_key == "curr_bed_type") {
+            // reset to global value
+            DynamicConfig& global_cfg = wxGetApp().preset_bundle->project_config;
+            ret = global_cfg.option("curr_bed_type")->getInt();
+            break;
+        }
         ret = config.option(opt_key)->getInt();
-		break;
+        break;
     // BBS
     case coEnums:
         ret = config.opt_int(opt_key, idx);
         break;
+    case coPoint:
+        ret = config.option<ConfigOptionPoint>(opt_key)->value;
+        break;
 	case coPoints:
 		if (opt_key == "printable_area")
-			ret = config.option<ConfigOptionPoints>(opt_key)->values;
+            ret = get_thumbnails_string(config.option<ConfigOptionPoints>(opt_key)->values);
         else if (opt_key == "bed_exclude_area")
+            ret = get_thumbnails_string(config.option<ConfigOptionPoints>(opt_key)->values);
+        else if (opt_key == "thumbnail_size")
             ret = get_thumbnails_string(config.option<ConfigOptionPoints>(opt_key)->values);
 		else
 			ret = config.option<ConfigOptionPoints>(opt_key)->get_at(idx);
@@ -1142,10 +1159,15 @@ boost::any ConfigOptionsGroup::get_config_value2(const DynamicPrintConfig& confi
     case coEnums:
         ret = config.opt_int(opt_key, idx);
         break;
+    case coPoint:
+        ret = config.option<ConfigOptionPoint>(opt_key)->value;
+        break;
     case coPoints:
         if (opt_key == "printable_area")
-            ret = config.option<ConfigOptionPoints>(opt_key)->values;
+            ret = get_thumbnails_string(config.option<ConfigOptionPoints>(opt_key)->values);
         else if (opt_key == "bed_exclude_area")
+            ret = get_thumbnails_string(config.option<ConfigOptionPoints>(opt_key)->values);
+        else if (opt_key == "thumbnail_size")
             ret = get_thumbnails_string(config.option<ConfigOptionPoints>(opt_key)->values);
         else
             ret = config.option<ConfigOptionPoints>(opt_key)->get_at(idx);

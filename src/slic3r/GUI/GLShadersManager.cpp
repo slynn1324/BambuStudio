@@ -34,11 +34,12 @@ std::pair<bool, std::string> GLShadersManager::init()
     bool valid = true;
 
     // used to render bed axes and model, selection hints, gcode sequential view marker model, preview shells, options in gcode preview
-   valid &= append_shader("gouraud_light", { "gouraud_light.vs", "gouraud_light.fs" });
+    valid &= append_shader("gouraud_light", { "gouraud_light.vs", "gouraud_light.fs" });
     //used to render thumbnail
-   valid &= append_shader("thumbnail", { "thumbnail.vs", "thumbnail.fs" });
-   // used to render first layer for calibration
-   valid &= append_shader("cali", { "cali.vs", "cali.fs"});
+    valid &= append_shader("thumbnail", { "thumbnail.vs", "thumbnail.fs" });
+    // used to render first layer for calibration
+    valid &= append_shader("cali", { "cali.vs", "cali.fs"});
+    valid &= append_shader("flat", {"flat.vs", "flat.fs"});
     // used to render printbed
     valid &= append_shader("printbed", { "printbed.vs", "printbed.fs" });
     // used to render options in gcode preview
@@ -77,13 +78,13 @@ std::pair<bool, std::string> GLShadersManager::init()
         //if (GUI::wxGetApp().plater() && GUI::wxGetApp().plater()->is_wireframe_enabled())
         //    valid &= append_shader("mm_gouraud", {"mm_gouraud_wireframe.vs", "mm_gouraud_wireframe.fs"}, {"FLIP_TRIANGLE_NORMALS"sv});
         //else
-            valid &= append_shader("mm_gouraud", {"mm_gouraud.vs", "mm_gouraud.fs"}, {"FLIP_TRIANGLE_NORMALS"sv});
+            valid &= append_shader("mm_gouraud", {"mm_gouraud_wireframe.vs", "mm_gouraud_wireframe.fs"}, {"FLIP_TRIANGLE_NORMALS"sv});//{"mm_gouraud.vs", "mm_gouraud.fs"}
     }
     else {
         //if (GUI::wxGetApp().plater() && GUI::wxGetApp().plater()->is_wireframe_enabled())
         //    valid &= append_shader("mm_gouraud", {"mm_gouraud_wireframe.vs", "mm_gouraud_wireframe.fs"});
         //else
-            valid &= append_shader("mm_gouraud", {"mm_gouraud.vs", "mm_gouraud.fs"});
+            valid &= append_shader("mm_gouraud", {"mm_gouraud_wireframe.vs", "mm_gouraud_wireframe.fs"});//{"mm_gouraud.vs", "mm_gouraud.fs"}
     }
 
     //BBS: add shader for outline

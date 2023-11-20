@@ -124,6 +124,11 @@ void View3D::select_curr_plate_all()
         m_canvas->select_curr_plate_all();
 }
 
+void View3D::select_object_from_idx(std::vector<int>& object_idxs) {
+    if (m_canvas != nullptr)
+        m_canvas->select_object_from_idx(object_idxs);
+}
+
 //BBS
 void View3D::remove_curr_plate_all()
 {
@@ -153,6 +158,11 @@ void View3D::center_selected()
 {
     if (m_canvas != nullptr)
         m_canvas->do_center();
+}
+
+void View3D::center_selected_plate(const int plate_idx) {
+    if (m_canvas != nullptr)
+        m_canvas->do_center_plate(plate_idx);
 }
 
 void View3D::mirror_selection(Axis axis)
@@ -738,7 +748,7 @@ void Preview::load_print_as_fff(bool keep_z_range, bool only_gcode)
             unsigned int number_extruders = wxGetApp().is_editor() ?
                 (unsigned int)print->extruders().size() :
                 m_canvas->get_gcode_extruders_count();
-            std::vector<Item> gcodes = wxGetApp().is_editor() ?
+            std::vector<CustomGCode::Item> gcodes = wxGetApp().is_editor() ?
                 //BBS
                 wxGetApp().plater()->model().get_curr_plate_custom_gcodes().gcodes :
                 m_canvas->get_custom_gcode_per_print_z();

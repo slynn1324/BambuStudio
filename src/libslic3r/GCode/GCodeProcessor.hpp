@@ -20,6 +20,8 @@ namespace Slic3r {
 // slice warnings enum strings
 #define NOZZLE_HRC_CHECKER                                          "the_actual_nozzle_hrc_smaller_than_the_required_nozzle_hrc"
 #define BED_TEMP_TOO_HIGH_THAN_FILAMENT                             "bed_temperature_too_high_than_filament"
+#define NOT_SUPPORT_TRADITIONAL_TIMELAPSE                           "not_support_traditional_timelapse"
+#define NOT_GENERATE_TIMELAPSE                                      "not_generate_timelapse"
 
     enum class EMoveType : unsigned char
     {
@@ -71,6 +73,7 @@ namespace Slic3r {
 
         std::vector<double>                                 volumes_per_color_change;
         std::map<size_t, double>                            volumes_per_extruder;
+        std::map<size_t, double>                            wipe_tower_volumes_per_extruder;
         //BBS: the flush amount of every filament
         std::map<size_t, double>                            flush_per_filament;
         std::map<ExtrusionRole, std::pair<double, double>>  used_filaments_per_role;
@@ -86,6 +89,7 @@ namespace Slic3r {
             }
             volumes_per_color_change.clear();
             volumes_per_color_change.shrink_to_fit();
+            wipe_tower_volumes_per_extruder.clear();
             volumes_per_extruder.clear();
             flush_per_filament.clear();
             used_filaments_per_role.clear();
@@ -107,11 +111,23 @@ namespace Slic3r {
         ConflictResult() = default;
     };
 
+    struct BedMatchResult
+    {
+        bool match;
+        std::string bed_type_name;
+        int extruder_id;
+        BedMatchResult():match(true),bed_type_name(""),extruder_id(-1) {}
+        BedMatchResult(bool _match,const std::string& _bed_type_name="",int _extruder_id=-1)
+            :match(_match),bed_type_name(_bed_type_name),extruder_id(_extruder_id)
+        {}
+    };
+
     using ConflictResultOpt = std::optional<ConflictResult>;
 
     struct GCodeProcessorResult
     {
         ConflictResultOpt conflict_result;
+        BedMatchResult  bed_match_result;
 
         struct SettingsIds
         {
@@ -179,6 +195,8 @@ namespace Slic3r {
         bool toolpath_outside;
         //BBS: add object_label_enabled
         bool label_object_enabled;
+        int timelapse_warning_code {0};
+        bool support_traditional_timelapse{true};
         float printable_height;
         SettingsIds settings_ids;
         size_t extruders_count;
@@ -186,6 +204,7 @@ namespace Slic3r {
         std::vector<float> filament_diameters;
         std::vector<int>   required_nozzle_HRC;
         std::vector<float> filament_densities;
+        std::vector<float> filament_costs;
         std::vector<int> filament_vitrification_temperature;
         PrintEstimatedStatistics print_statistics;
         std::vector<CustomGCode::Item> custom_gcode_per_print_z;
@@ -211,17 +230,20 @@ namespace Slic3r {
             bed_exclude_area = other.bed_exclude_area;
             toolpath_outside = other.toolpath_outside;
             label_object_enabled = other.label_object_enabled;
+            timelapse_warning_code = other.timelapse_warning_code;
             printable_height = other.printable_height;
             settings_ids = other.settings_ids;
             extruders_count = other.extruders_count;
             extruder_colors = other.extruder_colors;
             filament_diameters = other.filament_diameters;
             filament_densities = other.filament_densities;
+            filament_costs = other.filament_costs;
             print_statistics = other.print_statistics;
             custom_gcode_per_print_z = other.custom_gcode_per_print_z;
             spiral_vase_layers = other.spiral_vase_layers;
             warnings = other.warnings;
             bed_type = other.bed_type;
+            bed_match_result = other.bed_match_result;
 #if ENABLE_GCODE_VIEWER_STATISTICS
             time = other.time;
 #endif
@@ -237,7 +259,6 @@ namespace Slic3r {
         static const std::vector<std::string> Reserved_Tags;
         static const std::string Flush_Start_Tag;
         static const std::string Flush_End_Tag;
-        static const std::map<NozzleType, int>Nozzle_Type_To_HRC;
     public:
         enum class ETags : unsigned char
         {
@@ -253,7 +274,9 @@ namespace Slic3r {
             First_Line_M73_Placeholder,
             Last_Line_M73_Placeholder,
             Estimated_Printing_Time_Placeholder,
-            Total_Layer_Number_Placeholder
+            Total_Layer_Number_Placeholder,
+            Wipe_Tower_Start,
+            Wipe_Tower_End,
         };
 
         static const std::string& reserved_tag(ETags tag) { return Reserved_Tags[static_cast<unsigned char>(tag)]; }
@@ -353,6 +376,7 @@ namespace Slic3r {
             float time() const;
         };
 
+
     private:
         struct TimeMachine
         {
@@ -448,6 +472,7 @@ namespace Slic3r {
             // Additional load / unload times for a filament exchange sequence.
             float filament_load_times;
             float filament_unload_times;
+
             std::array<TimeMachine, static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count)> machines;
 
             void reset();
@@ -462,8 +487,11 @@ namespace Slic3r {
             double color_change_cache;
             std::vector<double> volumes_per_color_change;
 
-            double tool_change_cache;
+            double model_extrude_cache;
             std::map<size_t, double> volumes_per_extruder;
+
+            double wipe_tower_cache;
+            std::map<size_t, double>wipe_tower_volume_per_extruder;
 
             //BBS: the flush amount of every filament
             std::map<size_t, double> flush_per_filament;
@@ -473,10 +501,12 @@ namespace Slic3r {
 
             void reset();
 
-            void increase_caches(double extruded_volume);
+            void increase_model_caches(double extruded_volume);
+            void increase_wipe_tower_caches(double extruded_volume);
 
             void process_color_change_cache();
-            void process_extruder_cache(GCodeProcessor* processor);
+            void process_model_cache(GCodeProcessor* processor);
+            void process_wipe_tower_cache(GCodeProcessor* processor);
             void update_flush_per_filament(size_t extrude_id, float flush_length);
             void process_role_cache(GCodeProcessor* processor);
             void process_caches(GCodeProcessor* processor);
@@ -613,7 +643,6 @@ namespace Slic3r {
 
     private:
         GCodeReader m_parser;
-
         EUnits m_units;
         EPositioningType m_global_positioning_type;
         EPositioningType m_e_local_positioning_type;
@@ -626,6 +655,7 @@ namespace Slic3r {
         CachedPosition m_cached_position;
         bool m_wiping;
         bool m_flushing;
+        bool m_wipe_tower;
         float m_remaining_volume;
 
         //BBS: x, y offset for gcode generated
@@ -707,6 +737,7 @@ namespace Slic3r {
         void reset();
 
         const GCodeProcessorResult& get_result() const { return m_result; }
+        GCodeProcessorResult& result() { return m_result; }
         GCodeProcessorResult&& extract_result() { return std::move(m_result); }
 
         // Load a G-code into a stand-alone G-code viewer.
@@ -824,6 +855,9 @@ namespace Slic3r {
 
         //BBS: wait bed temperature
         void process_M190(const GCodeReader::GCodeLine& line);
+
+        //BBS: wait chamber temperature
+        void process_M191(const GCodeReader::GCodeLine& line);
 
         // Set max printing acceleration
         void process_M201(const GCodeReader::GCodeLine& line);

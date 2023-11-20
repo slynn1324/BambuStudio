@@ -29,9 +29,13 @@ static wxString desc_upload_ftp_failed      = _L("Failed to upload print file to
 static wxString sending_over_lan_str        = _L("Sending print job over LAN");
 static wxString sending_over_cloud_str      = _L("Sending print job through cloud service");
 
+static wxString wait_sending_finish         = _L("Print task sending times out.");
+static wxString desc_wait_sending_finish    = _L("The printer timed out while receiving a print job. Please check if the network is functioning properly and send the print again.");
+
 PrintJob::PrintJob(std::shared_ptr<ProgressIndicator> pri, Plater* plater, std::string dev_id)
 : PlaterJob{ std::move(pri), plater },
-    m_dev_id(dev_id)
+    m_dev_id(dev_id),
+    m_is_calibration_task(false)
 {
     m_print_job_completed_id = plater->get_print_finished_event();
 }
@@ -70,9 +74,11 @@ std::string PrintJob::truncate_string(const std::string& str, size_t maxLength)
         return str;
     }
 
-    std::string truncatedStr = str.substr(0, maxLength - 3);
+    wxString local_str = wxString::FromUTF8(str);
+    wxString truncatedStr = local_str.Mid(0, maxLength - 3);
     truncatedStr.append("...");
-    return truncatedStr;
+
+    return truncatedStr.utf8_string();
 }
 
 
@@ -206,7 +212,7 @@ void PrintJob::process()
         params.filename = job_data._temp_path.string();
         params.connection_type = this->connection_type;
 
-        result = m_agent->start_send_gcode_to_sdcard(params, nullptr, nullptr);
+        result = m_agent->start_send_gcode_to_sdcard(params, nullptr, nullptr, nullptr);
         if (result != 0) {
             BOOST_LOG_TRIVIAL(error) << "access code is invalid";
             m_enter_ip_address_fun_fail();
@@ -278,6 +284,11 @@ void PrintJob::process()
     if (params.preset_name.empty() && m_print_type == "from_normal") { params.preset_name = wxString::Format("%s_plate_%d", m_project_name, curr_plate_idx).ToStdString(); }
     if (params.project_name.empty()) {params.project_name = m_project_name;}
 
+    if (m_is_calibration_task) {
+        params.project_name = m_project_name;
+        params.origin_model_id = "";
+    }
+
     wxString error_text;
     wxString msg_text;
 
@@ -288,6 +299,7 @@ void PrintJob::process()
         70,     // PrintingStageWaiting
         75,     // PrintingStageRecord
         97,     // PrintingStageSending
+        100,    // PrintingStageFinished
         100     // PrintingStageFinished
     };
 
@@ -383,6 +395,57 @@ void PrintJob::process()
             return was_canceled();
         };
 
+    
+    DeviceManager* dev = wxGetApp().getDeviceManager();
+    MachineObject* obj = dev->get_selected_machine();
+
+    auto wait_fn = [this, curr_percent, &obj](int state, std::string job_info) {
+            BOOST_LOG_TRIVIAL(info) << "print_job: get_job_info = " << job_info;
+
+            if (!obj->is_support_wait_sending_finish) {
+                return true;
+            }
+
+            std::string curr_job_id;
+            json job_info_j;
+            try {
+                job_info_j.parse(job_info);
+                if (job_info_j.contains("job_id")) {
+                    curr_job_id = job_info_j["job_id"].get<std::string>();
+                }
+                BOOST_LOG_TRIVIAL(trace) << "print_job: curr_obj_id=" << curr_job_id;
+
+            } catch(...) {
+                ;
+            }
+
+            if (obj) {
+                int time_out = 0;
+                while (time_out < PRINT_JOB_SENDING_TIMEOUT) {
+                    BOOST_LOG_TRIVIAL(trace) << "print_job: obj job_id = " << obj->job_id_;
+                    if (!obj->job_id_.empty() && obj->job_id_.compare(curr_job_id) == 0) {
+                        BOOST_LOG_TRIVIAL(info) << "print_job: got job_id = " << obj->job_id_ << ", time_out=" << time_out;
+                        return true;
+                    }
+                    if (obj->is_in_printing_status(obj->print_status)) {
+                        BOOST_LOG_TRIVIAL(info) << "print_job: printer has enter printing status, s = " << obj->print_status;
+                        return true;
+                    }
+                    time_out++;
+                    boost::this_thread::sleep_for(boost::chrono::milliseconds(1000));
+                }
+                //this->update_status(curr_percent, _L("Print task sending times out."));
+                m_plater->update_print_error_info(BAMBU_NETWORK_ERR_TIMEOUT, wait_sending_finish.ToStdString(), desc_wait_sending_finish.ToStdString());
+                BOOST_LOG_TRIVIAL(info) << "print_job: timeout, cancel the job" << obj->job_id_;
+                /* handle tiemout */
+                obj->command_task_cancel(curr_job_id);
+                return false;
+            }
+            BOOST_LOG_TRIVIAL(info) << "print_job: obj is null";
+            return true;
+    };
+
+
     if (params.connection_type != "lan") {
         if (params.dev_ip.empty())
             params.comments = "no_ip";
@@ -405,7 +468,7 @@ void PrintJob::process()
                 BOOST_LOG_TRIVIAL(info) << "print_job: use ftp send print only";
                 this->update_status(curr_percent, _L("Sending print job over LAN"));
                 is_try_lan_mode = true;
-                result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn);
+                result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
                 if (result < 0) {
                     error_text = wxString::Format("Access code:%s Ip address:%s", params.password, params.dev_ip);
                     // try to send with cloud
@@ -421,7 +484,7 @@ void PrintJob::process()
                 // try to send local with record
                 BOOST_LOG_TRIVIAL(info) << "print_job: try to start local print with record";
                 this->update_status(curr_percent, _L("Sending print job over LAN"));
-                result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn);
+                result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
                 if (result == 0) {
                     params.comments = "";
                 }
@@ -436,13 +499,13 @@ void PrintJob::process()
                     // try to send with cloud
                     BOOST_LOG_TRIVIAL(warning) << "print_job: try to send with cloud";
                     this->update_status(curr_percent, _L("Sending print job through cloud service"));
-                    result = m_agent->start_print(params, update_fn, cancel_fn);
+                    result = m_agent->start_print(params, update_fn, cancel_fn, wait_fn);
                 }
             }
             else {
                 BOOST_LOG_TRIVIAL(info) << "print_job: send with cloud";
                 this->update_status(curr_percent, _L("Sending print job through cloud service"));
-                result = m_agent->start_print(params, update_fn, cancel_fn);
+                result = m_agent->start_print(params, update_fn, cancel_fn, wait_fn);
             }
         } 
     } else {
@@ -481,6 +544,8 @@ void PrintJob::process()
         
         BOOST_LOG_TRIVIAL(error) << "print_job: failed, result = " << result;
     } else {
+        // wait for printer mqtt ready the same job id
+
         wxGetApp().plater()->record_slice_preset("print");
 
         BOOST_LOG_TRIVIAL(error) << "print_job: send ok.";
@@ -532,5 +597,9 @@ void PrintJob::connect_to_local_mqtt()
     this->update_status(0, wxEmptyString);
 }
 
+void PrintJob::set_calibration_task(bool is_calibration)
+{
+    m_is_calibration_task = is_calibration;
+}
 
 }} // namespace Slic3r::GUI

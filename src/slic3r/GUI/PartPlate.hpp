@@ -47,6 +47,15 @@ inline int compute_colum_count(int count)
     return cols;
 }
 
+
+extern const float WIPE_TOWER_DEFAULT_X_POS;
+extern const float WIPE_TOWER_DEFAULT_Y_POS;  // Max y
+
+extern const float I3_WIPE_TOWER_DEFAULT_X_POS;
+extern const float I3_WIPE_TOWER_DEFAULT_Y_POS; // Max y
+
+
+
 namespace Slic3r {
 
 class Model;
@@ -146,6 +155,7 @@ private:
     GLUquadricObject* m_quadric;
     int m_hover_id;
     bool m_selected;
+    int m_timelapse_warning_code = 0;
 
     // BBS
     DynamicPrintConfig m_config;
@@ -237,6 +247,9 @@ public:
     // @return PrintSequence::{ByLayer,ByObject}
     PrintSequence get_real_print_seq() const;
 
+    bool has_spiral_mode_config() const;
+    bool get_spiral_vase_mode() const;
+    void set_spiral_vase_mode(bool spiral_mode, bool as_global);
 
     //static const int plate_x_offset = 20; //mm
     //static const double plate_x_gap = 0.2;
@@ -263,7 +276,8 @@ public:
     // set the plate's name
     void set_plate_name(const std::string &name);
 
-
+    void set_timelapse_warning_code(int code) { m_timelapse_warning_code = code; }
+    int  timelapse_warning_code() { return m_timelapse_warning_code; }
 
     //get the print's object, result and index
     void get_print(PrintBase **print, GCodeResult **result, int *index);
@@ -280,14 +294,16 @@ public:
     Vec3d get_center_origin();
     /* size and position related functions*/
     //set position and size
-    void set_pos_and_size(Vec3d& origin, int width, int depth, int height, bool with_instance_move);
+    void set_pos_and_size(Vec3d& origin, int width, int depth, int height, bool with_instance_move, bool do_clear = true);
 
     // BBS
+    Vec2d get_size() const { return Vec2d(m_width, m_depth); }
     ModelObjectPtrs get_objects() { return m_model->objects; }
     ModelInstance* get_instance(int obj_id, int instance_id);
 
     Vec3d get_origin() { return m_origin; }
-    Vec3d estimate_wipe_tower_size(const double w, const double wipe_volume) const;
+    Vec3d estimate_wipe_tower_size(const DynamicPrintConfig & config, const double w, const double wipe_volume, int plate_extruder_size = 0, bool use_global_objects = false) const;
+    arrangement::ArrangePolygon estimate_wipe_tower_polygon(const DynamicPrintConfig & config, int plate_index, int plate_extruder_size = 0, bool use_global_objects = false) const;
     std::vector<int> get_extruders(bool conside_custom_gcode = false) const;
     std::vector<int> get_extruders_under_cli(bool conside_custom_gcode, DynamicPrintConfig& full_config) const;
     std::vector<int> get_extruders_without_support(bool conside_custom_gcode = false) const;
@@ -411,6 +427,12 @@ public:
         return result;
     }
 
+    // check whether plate's slice result valid for export to file
+    bool is_slice_result_ready_for_export()
+    {
+        return is_slice_result_ready_for_print() && has_printable_instances();
+    }
+
     //invalid sliced result
     void update_slice_result_valid_state(bool valid = false);
 
@@ -445,6 +467,10 @@ public:
     //load pattern box data from file
     int load_pattern_box_data(std::string filename);
 
+    std::vector<int> get_first_layer_print_sequence() const;
+    void set_first_layer_print_sequence(const std::vector<int> &sorted_filaments);
+    void update_first_layer_print_sequence(size_t filament_nums);
+
     void print() const;
 
     friend class cereal::access;
@@ -454,7 +480,7 @@ public:
         std::vector<std::pair<int, int>>	objects_and_instances;
         std::vector<std::pair<int, int>>	instances_outside;
 
-        ar(m_plate_index, m_print_index, m_origin, m_width, m_depth, m_height, m_locked, m_selected, m_ready_for_slice, m_slice_result_valid, m_apply_invalid, m_printable, m_tmp_gcode_path, objects_and_instances, instances_outside, m_config, m_name);
+        ar(m_plate_index, m_print_index, m_locked, m_selected, m_ready_for_slice, m_slice_result_valid, m_apply_invalid, m_printable, m_tmp_gcode_path, objects_and_instances, instances_outside, m_config, m_name);
 
         for (std::vector<std::pair<int, int>>::iterator it = objects_and_instances.begin(); it != objects_and_instances.end(); ++it)
             obj_to_instance_set.insert(std::pair(it->first, it->second));
@@ -472,7 +498,7 @@ public:
         for (std::set<std::pair<int, int>>::iterator it = obj_to_instance_set.begin(); it != obj_to_instance_set.end(); ++it)
             objects_and_instances.emplace_back(it->first, it->second);
 
-        ar(m_plate_index, m_print_index, m_origin, m_width, m_depth, m_height, m_locked, m_selected, m_ready_for_slice, m_slice_result_valid, m_apply_invalid, m_printable,m_tmp_gcode_path, objects_and_instances, instances_outside, m_config, m_name);
+        ar(m_plate_index, m_print_index, m_locked, m_selected, m_ready_for_slice, m_slice_result_valid, m_apply_invalid, m_printable,m_tmp_gcode_path, objects_and_instances, instances_outside, m_config, m_name);
     }
     /*template<class Archive> void serialize(Archive& ar)
     {
@@ -548,6 +574,8 @@ class PartPlateList : public ObjectBase
     void generate_icon_textures();
     void release_icon_textures();
 
+    void set_default_wipe_tower_pos_for_plate(int plate_idx);
+
     friend class cereal::access;
     friend class UndoRedo::StackImpl;
     friend class PartPlate;
@@ -558,16 +586,16 @@ public:
         class TexturePart {
         public:
             // position
-            int x;
-            int y;
-            int w;
-            int h;
+            float x;
+            float y;
+            float w;
+            float h;
             unsigned int vbo_id;
             std::string filename;
             GLTexture* texture { nullptr };
             Vec2d offset;
             GeometryBuffer* buffer { nullptr };
-            TexturePart(int xx, int yy, int ww, int hh, std::string file) {
+            TexturePart(float xx, float yy, float ww, float hh, std::string file){
                 x = xx; y = yy;
                 w = ww; h = hh;
                 filename = file;
@@ -590,8 +618,10 @@ public:
             }
 
             void update_buffer();
+            void reset();
         };
         std::vector<TexturePart> parts;
+        void                     reset();
     };
 
     static const unsigned int MAX_PLATES_COUNT = MAX_PLATE_COUNT;
@@ -668,16 +698,18 @@ public:
     Vec2d get_current_shape_position() { return compute_shape_position(m_current_plate, m_plate_cols); }
     Pointfs get_exclude_area() { return m_exclude_areas; }
 
+    std::set<int> get_extruders(bool conside_custom_gcode = false) const;
+
     //select plate
     int select_plate(int index);
 
     //get the plate counts, not including the invalid plate
-    int get_plate_count();
+    int get_plate_count() const;
 
     //update the plate cols due to plate count change
     void update_plate_cols();
 
-    void update_all_plates_pos_and_size(bool adjust_position = true, bool with_unprintable_move = true);
+    void update_all_plates_pos_and_size(bool adjust_position = true, bool with_unprintable_move = true, bool switch_plate_type = false, bool do_clear = true);
 
     //get the plate cols
     int get_plate_cols() { return m_plate_cols; }
@@ -771,6 +803,7 @@ public:
     bool is_all_slice_results_valid() const;
     bool is_all_slice_results_ready_for_print() const;
     bool is_all_plates_ready_for_slice() const;
+    bool is_all_slice_result_ready_for_export() const;
     void print() const;
 
     //get the all the sliced result
@@ -792,7 +825,8 @@ public:
     template<class Archive> void serialize(Archive& ar)
     {
         //ar(cereal::base_class<ObjectBase>(this));
-        ar(m_shape, m_plate_width, m_plate_depth, m_plate_height, m_height_to_lid, m_height_to_rod, m_height_limit_mode, m_plate_count, m_current_plate, m_plate_list, unprintable_plate);
+        //Cancel undo/redo for m_shape ,m_plate_width, m_plate_depth, m_plate_height,Because the printing area of different models is different, currently if the grid changes, it cannot correspond to the model on the left ui
+        ar(m_height_to_lid, m_height_to_rod, m_height_limit_mode, m_plate_count, m_current_plate, m_plate_list, unprintable_plate);
         //ar(m_plate_width, m_plate_depth, m_plate_height, m_plate_count, m_current_plate);
     }
 

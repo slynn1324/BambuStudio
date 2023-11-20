@@ -21,6 +21,8 @@
 //BBS: add stl
 #include "Format/STL.hpp"
 
+#include "Calib.hpp"
+
 #include <map>
 #include <memory>
 #include <string>
@@ -232,9 +234,15 @@ private:
     friend class ModelObject;
 };
 
+enum class CutMode : int {
+    cutPlanar,
+    cutTongueAndGroove
+};
+
 enum class CutConnectorType : int {
     Plug,
     Dowel,
+    Snap,
     Undef
 };
 
@@ -252,6 +260,11 @@ enum class CutConnectorShape : int {
     Circle,
     Undef
     //,D-shape
+};
+struct CutConnectorParas
+{
+    float snap_space_proportion{0.3};
+    float snap_bulge_proportion{0.15};
 };
 
 struct CutConnectorAttributes
@@ -288,7 +301,7 @@ struct CutConnector
     float                  radius_tolerance; // [0.f : 1.f]
     float                  height_tolerance; // [0.f : 1.f]
     CutConnectorAttributes attribs;
-
+    CutConnectorParas paras;
     CutConnector() : pos(Vec3d::Zero()), rotation_m(Transform3d::Identity()), radius(5.f), height(10.f), radius_tolerance(0.f), height_tolerance(0.1f) {}
 
     CutConnector(Vec3d p, Transform3d rot, float r, float h, float rt, float ht, CutConnectorAttributes attributes)
@@ -466,7 +479,7 @@ public:
 
     bool                        is_cut() const { return cut_id.id().valid(); }
     bool                        has_connectors() const;
-    static indexed_triangle_set get_connector_mesh(CutConnectorAttributes connector_attributes);
+    static indexed_triangle_set get_connector_mesh(CutConnectorAttributes connector_attributes, CutConnectorParas para);
     void                        apply_cut_connectors(const std::string &name);
     // invalidate cut state for this object and its connectors/volumes
     void invalidate_cut();
@@ -840,6 +853,7 @@ public:
     // It contains information about connetors
     struct CutInfo
     {
+        bool             is_from_upper{true};
         bool             is_connector{false};
         bool             is_processed{true};
         CutConnectorType connector_type{CutConnectorType::Plug};
@@ -856,10 +870,13 @@ public:
 
         void set_processed() { is_processed = true; }
         void invalidate() { is_connector = false; }
-
+        void reset_from_upper() { is_from_upper = true; }
         template<class Archive> inline void serialize(Archive &ar) { ar(is_connector, is_processed, connector_type, radius_tolerance, height_tolerance); }
     };
     CutInfo cut_info;
+
+    bool is_from_upper() const { return cut_info.is_from_upper; }
+    void reset_from_upper() { cut_info.reset_from_upper(); }
 
     bool is_cut_connector() const { return cut_info.is_processed && cut_info.is_connector; }
     void invalidate_cut_info() { cut_info.invalidate(); }
@@ -906,6 +923,7 @@ public:
 	bool                is_support_modifier()   const { return m_type == ModelVolumeType::SUPPORT_BLOCKER || m_type == ModelVolumeType::SUPPORT_ENFORCER; }
     t_model_material_id material_id() const { return m_material_id; }
     void                set_material_id(t_model_material_id material_id);
+    void                reset_extra_facets();
     ModelMaterial*      material() const;
     void                set_material(t_model_material_id material_id, const ModelMaterial &material);
     // Extract the current extruder ID based on this ModelVolume's config and the parent ModelObject's config.
@@ -1543,6 +1561,9 @@ public:
     static double getThermalLength(const ModelVolume* modelVolumePtr);
     static double getThermalLength(const std::vector<ModelVolume*> modelVolumePtrs);
     static Polygon getBedPolygon() { return Model::printSpeedMap.bed_poly; }
+    //BBS static functions that update extruder params and speed table
+    static void setPrintSpeedTable(const DynamicPrintConfig& config, const PrintConfig& print_config);
+    static void setExtruderParams(const DynamicPrintConfig& config, int extruders_count);
 
     // BBS: backup
     static Model read_from_archive(
@@ -1623,6 +1644,8 @@ public:
     bool          is_seam_painted() const;
     // Checks if any of objects is painted using the multi-material painting gizmo.
     bool          is_mm_painted() const;
+
+    std::unique_ptr<CalibPressureAdvancePattern> calib_pa_pattern;
 
 private:
     explicit Model(int) : ObjectBase(-1)

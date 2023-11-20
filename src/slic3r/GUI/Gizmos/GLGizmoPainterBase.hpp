@@ -84,8 +84,8 @@ public:
     };
 
     // BBS
-    static constexpr std::array<float, 4> enforcers_color{ 0.5f, 1.f, 0.5f, 1.f };
-    static constexpr std::array<float, 4> blockers_color{ 1.f, 0.5f, 0.5f, 1.f };
+    static constexpr std::array<float, 4> enforcers_color{0.627f, 0.627f, 0.827f, 1.0f};//=GLVolume::SUPPORT_ENFORCER_COL
+    static constexpr std::array<float, 4> blockers_color{0.823f, 0.627f, 0.627f, 1.0f};//=GLVolume::SUPPORT_BLOCKER_COL
 
 #ifdef PRUSASLICER_TRIANGLE_SELECTOR_DEBUG
     void render_debug(ImGuiWrapper* imgui);
@@ -201,7 +201,7 @@ protected:
 
 private:
     void update_render_data();
-    void render(int buffer_idx, int position_id = -1, int barycentric_id = -1);
+    void render(int buffer_idx, int position_id = -1, bool show_wireframe=false);
 };
 
 
@@ -366,10 +366,14 @@ private:
         int instance_idx{ -1 };
     };
     mutable CutContours m_cut_contours;
-
+    mutable float       m_cursor_z{0};
+    mutable double      m_height_start_z_in_imgui{0};
+    mutable bool        m_is_set_height_start_z_by_imgui{false};
+    mutable Vec2i       m_height_start_pos{0, 0};
+    mutable bool        m_is_cursor_in_imgui{false};
     BoundingBoxf3 bounding_box() const;
-    void update_contours(const TriangleMesh& vol_mesh, float cursor_z, float max_z, float min_z) const;
-
+    void          update_contours(const TriangleMesh &vol_mesh, float cursor_z, float max_z, float min_z, bool update_height_start_pos) const;
+    Vec2i         _3d_to_mouse(Vec3d pos_in_3d, const Camera &camera) const;
 protected:
     void on_set_state() override;
     void on_start_dragging() override {}

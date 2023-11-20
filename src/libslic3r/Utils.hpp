@@ -39,6 +39,7 @@
 #define CLI_PRINTABLE_SIZE_REDUCED     -20
 #define CLI_OBJECT_ARRANGE_FAILED      -21
 #define CLI_OBJECT_ORIENT_FAILED       -22
+#define CLI_MODIFIED_PARAMS_TO_PRINTER -23
 
 
 #define CLI_NO_SUITABLE_OBJECTS     -50
@@ -56,6 +57,7 @@
 #define CLI_FILAMENTS_DIFFERENT_TEMP        -62
 #define CLI_OBJECT_COLLISION_IN_SEQ_PRINT   -63
 #define CLI_OBJECT_COLLISION_IN_LAYER_PRINT -64
+#define CLI_SPIRAL_MODE_INVALID_PARAMS      -65
 
 #define CLI_SLICING_ERROR                  -100
 #define CLI_GCODE_PATH_CONFLICTS           -101
@@ -114,7 +116,16 @@ inline std::string convert_to_full_version(std::string short_version)
     }
     return result;
 }
-
+template<typename DataType>
+inline DataType round_divide(DataType dividend, DataType divisor) //!< Return dividend divided by divisor rounded to the nearest integer
+{
+    return (dividend + divisor / 2) / divisor;
+}
+template<typename DataType>
+inline DataType round_up_divide(DataType dividend, DataType divisor) //!< Return dividend divided by divisor rounded to the nearest integer
+{
+    return (dividend + divisor - 1) / divisor;
+}
 
 
 // Set a path with GUI localization files.

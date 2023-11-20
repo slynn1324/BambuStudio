@@ -101,27 +101,38 @@ void CalibrationCaliPage::set_cali_img()
 {
     if (m_cali_mode == CalibMode::Calib_PA_Line) {
         if (m_cali_method == CalibrationMethod::CALI_METHOD_MANUAL) {
-            m_picture_panel->set_img(create_scaled_bitmap("fd_calibration_manual", nullptr, 400));
+            m_picture_panel->set_bmp(ScalableBitmap(this, "fd_calibration_manual", 400));
         }
         else if (m_cali_method == CalibrationMethod::CALI_METHOD_AUTO) {
-            m_picture_panel->set_img(create_scaled_bitmap("fd_calibration_auto", nullptr, 400));
+            m_picture_panel->set_bmp(ScalableBitmap(this, "fd_calibration_auto", 400));
         }
     }
     else if (m_cali_mode == CalibMode::Calib_Flow_Rate) {
         if (m_cali_method == CalibrationMethod::CALI_METHOD_MANUAL) {
             if (m_page_type == CaliPageType::CALI_PAGE_CALI)
-                m_picture_panel->set_img(create_scaled_bitmap("flow_rate_calibration_coarse", nullptr, 400));
+                m_picture_panel->set_bmp(ScalableBitmap(this, "flow_rate_calibration_coarse", 400));
             if (m_page_type == CaliPageType::CALI_PAGE_FINE_CALI)
-                m_picture_panel->set_img(create_scaled_bitmap("flow_rate_calibration_fine", nullptr, 400));
+                m_picture_panel->set_bmp(ScalableBitmap(this, "flow_rate_calibration_fine", 400));
             else
-                m_picture_panel->set_img(create_scaled_bitmap("flow_rate_calibration_coarse", nullptr, 400));
+                m_picture_panel->set_bmp(ScalableBitmap(this, "flow_rate_calibration_coarse", 400));
         }
         else if (m_cali_method == CalibrationMethod::CALI_METHOD_AUTO) {
-            m_picture_panel->set_img(create_scaled_bitmap("flow_rate_calibration_auto", nullptr, 400));
+            m_picture_panel->set_bmp(ScalableBitmap(this, "flow_rate_calibration_auto", 400));
         }
     }
     else if (m_cali_mode == CalibMode::Calib_Vol_speed_Tower) {
-        m_picture_panel->set_img(create_scaled_bitmap("max_volumetric_speed_calibration", nullptr, 400));
+        m_picture_panel->set_bmp(ScalableBitmap(this, "max_volumetric_speed_calibration", 400));
+    }
+}
+
+void CalibrationCaliPage::set_pa_cali_image(int stage)
+{
+    if (m_cali_mode == CalibMode::Calib_PA_Line && m_cali_method == CALI_METHOD_MANUAL) {
+        if (stage == 0) {
+            m_picture_panel->set_bmp(ScalableBitmap(this, "fd_calibration_manual", 400));
+        } else if (stage == 1) {
+            m_picture_panel->set_bmp(ScalableBitmap(this, "fd_pattern_manual", 400));
+        }
     }
 }
 
@@ -132,6 +143,29 @@ void CalibrationCaliPage::clear_last_job_status()
 
 void CalibrationCaliPage::update(MachineObject* obj)
 {
+    if (this->IsShown()) {
+        if (obj) {
+            if (obj->print_status != "RUNNING") {
+                BOOST_LOG_TRIVIAL(info) << "on_show_cali_page - machine object status:"
+                                        << " dev_id = " << obj->dev_id
+                                        << ", print_type = " << obj->printer_type
+                                        << ", printer_status = " << obj->print_status
+                                        << ", is_connected = " << obj->is_connected()
+                                        << ", m_is_between_start_and_running = " << m_is_between_start_and_running
+                                        << ", cali_finished = " << obj->cali_finished
+                                        << ", cali_version = " << obj->cali_version
+                                        << ", cache_flow_ratio = " << obj->cache_flow_ratio
+                                        << ", sub_task_name = " << obj->subtask_name
+                                        << ", gcode_file_name = " << obj->m_gcode_file
+                                        << ", get_pa_calib_result" << obj->get_pa_calib_result
+                                        << ", get_flow_calib_result" << obj->get_flow_calib_result;
+            }
+        }
+        else {
+            BOOST_LOG_TRIVIAL(info) << "on_show_cali_page - machine object is nullptr";
+        }
+    }
+
     static int get_result_count = 0;
     // enable calibration when finished
     bool enable_cali = false;
@@ -394,7 +428,7 @@ void CalibrationCaliPage::reset_printing_values()
 
 void CalibrationCaliPage::on_device_connected(MachineObject* obj)
 {
-    ;
+    reset_printing_values();
 }
 
 void CalibrationCaliPage::set_cali_method(CalibrationMethod method)
@@ -437,6 +471,20 @@ void CalibrationCaliPage::set_cali_method(CalibrationMethod method)
     else {
         assert(false);
     }
+}
+
+bool CalibrationCaliPage::Show(bool show /*= true*/)
+{
+    if (true) {
+        reset_printing_values();
+    }
+    return wxPanel::Show(show);
+}
+
+void CalibrationCaliPage::msw_rescale()
+{
+    CalibrationWizardPage::msw_rescale();
+    m_picture_panel->msw_rescale();
 }
 
 float CalibrationCaliPage::get_selected_calibration_nozzle_dia(MachineObject* obj)

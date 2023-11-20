@@ -608,7 +608,7 @@ void Layer::make_ironing()
 				ironing_params.line_spacing = config.ironing_spacing;
 				ironing_params.height 		= default_layer_height * 0.01 * config.ironing_flow;
 				ironing_params.speed 		= config.ironing_speed;
-				ironing_params.angle 		= config.infill_direction * M_PI / 180.;
+				ironing_params.angle 		= (int(config.ironing_direction.value+layerm->region().config().infill_direction.value)%180) * M_PI / 180.;
 				ironing_params.pattern      = config.ironing_pattern;
 				ironing_params.layerm 		= layerm;
 				by_extruder.emplace_back(ironing_params);
@@ -662,7 +662,7 @@ void Layer::make_ironing()
 					// Check whether there is any non-solid hole in the regions.
 					bool internal_infill_solid = region_config.sparse_infill_density.value > 95.;
 					for (const Surface &surface : ironing_params.layerm->fill_surfaces.surfaces)
-						if ((! internal_infill_solid && surface.surface_type == stInternal) || surface.surface_type == stInternalBridge || surface.surface_type == stInternalVoid) {
+						if ((!internal_infill_solid && surface.surface_type == stInternal) || surface.surface_type == stInternalBridge || surface.surface_type == stInternalVoid || surface.surface_type==stInternalWithLoop) {
 							// Some fill region is not quite solid. Don't iron over the whole surface.
 							iron_completely = false;
 							break;
@@ -674,7 +674,7 @@ void Layer::make_ironing()
 						polygons_append(polys, surface.expolygon);
 				} else {
 					for (const Surface &surface : ironing_params.layerm->slices.surfaces)
-						if (surface.surface_type == stTop || (iron_everything && surface.surface_type == stBottom))
+						if ((surface.surface_type == stTop && region_config.top_shell_layers > 0) || (iron_everything && surface.surface_type == stBottom && region_config.bottom_shell_layers > 0))
 							// stBottomBridge is not being ironed on purpose, as it would likely destroy the bridges.
 							polygons_append(polys, surface.expolygon);
 				}
@@ -701,7 +701,7 @@ void Layer::make_ironing()
 
         // Create the filler object.
         f->spacing = ironing_params.line_spacing;
-        f->angle = float(ironing_params.angle + 0.25 * M_PI);
+        f->angle = float(ironing_params.angle);
         f->link_max_length = (coord_t) scale_(3. * f->spacing);
 		double  extrusion_height = ironing_params.height * f->spacing / nozzle_dmr;
 		float  extrusion_width  = Flow::rounded_rectangle_extrusion_width_from_spacing(float(nozzle_dmr), float(extrusion_height));

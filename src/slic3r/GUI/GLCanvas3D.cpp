@@ -36,6 +36,7 @@
 #include "I18N.hpp"
 #include "NotificationManager.hpp"
 #include "format.hpp"
+#include "DailyTips.hpp"
 
 #if ENABLE_RETINA_GL
 #include "slic3r/Utils/RetinaHelper.hpp"
@@ -301,7 +302,10 @@ void GLCanvas3D::LayersEditing::render_variable_layer_height_dialog(const GLCanv
     ImGui::PushStyleColor(ImGuiCol_BorderActive, ImVec4(0.00f, 0.68f, 0.26f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.00f, 0.68f, 0.26f, 0.00f));
     ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.00f, 0.68f, 0.26f, 0.00f));
-    ImGui::BBLDragScalar("##radius_input", ImGuiDataType_S32, &radius, 1, &v_min, &v_max);
+    if (ImGui::BBLDragScalar("##radius_input", ImGuiDataType_S32, &radius, 1, &v_min, &v_max)) {
+        radius = std::clamp(radius, 1, 10);
+        m_smooth_params.radius = (unsigned int)radius;
+    }
     ImGui::PopStyleColor(3);
 
     imgui.bbl_checkbox("##keep_min", m_smooth_params.keep_min);
@@ -1266,6 +1270,8 @@ void GLCanvas3D::on_change_color_mode(bool is_dark, bool reinit) {
     wxGetApp().imgui()->on_change_color_mode(is_dark);
     // Notification
     wxGetApp().plater()->get_notification_manager()->on_change_color_mode(is_dark);
+    // DailyTips Window
+    wxGetApp().plater()->get_dailytips()->on_change_color_mode(is_dark);
     // Preview Slider
     IMSlider* m_layers_slider = get_gcode_viewer().get_layers_slider();
     IMSlider* m_moves_slider = get_gcode_viewer().get_moves_slider();
@@ -1737,44 +1743,6 @@ bool GLCanvas3D::make_current_for_postinit() {
     return _set_current();
 }
 
-Points GLCanvas3D::estimate_wipe_tower_points(int plate_index, bool global) const
-{
-    PartPlateList &     ppl         = wxGetApp().plater()->get_partplate_list();
-    DynamicPrintConfig &proj_cfg    = wxGetApp().preset_bundle->project_config;
-    auto &              print       = wxGetApp().plater()->get_partplate_list().get_current_fff_print();
-    int                 plate_count = ppl.get_plate_count();
-    float               x           = dynamic_cast<const ConfigOptionFloats *>(proj_cfg.option("wipe_tower_x"))->get_at(plate_index);
-    float               y           = dynamic_cast<const ConfigOptionFloats *>(proj_cfg.option("wipe_tower_y"))->get_at(plate_index);
-    if (plate_index >= plate_count) { plate_index = 0; }
-    float w               = dynamic_cast<const ConfigOptionFloat *>(m_config->option("prime_tower_width"))->value;
-    float v               = dynamic_cast<const ConfigOptionFloat *>(m_config->option("prime_volume"))->value;
-    Vec3d         wipe_tower_size = ppl.get_plate(plate_index)->estimate_wipe_tower_size(w, v);
-
-    if (wipe_tower_size(1) == 0) {
-        // when depth is unavailable (no items on this plate), we have to estimate the depth using the extruder number of all plates
-        std::set<int> extruder_ids;
-        if (global) {
-            auto objs = wxGetApp().obj_list()->objects();
-            for (ModelObject *obj : *objs) {
-                for (ModelVolume *volume : obj->volumes) {
-                    std::vector<int> es = volume->get_extruders();
-                    extruder_ids.insert(es.begin(), es.end());
-                }
-            }
-        } else {
-            PartPlate* pl = ppl.get_plate(plate_index);
-            std::vector<int> es = pl->get_extruders();
-            extruder_ids.insert(es.begin(), es.end());
-        }
-        int extruder_size  = extruder_ids.size();
-        wipe_tower_size(1) = extruder_size * print.wipe_tower_data(extruder_size).depth + 2 * print.wipe_tower_data().brim_width;
-    }
-    Vec3d plate_origin = ppl.get_plate(plate_index)->get_origin();
-    Point wt_min_corner{scale_(x), scale_(y)};
-    Point wt_max_corner(scale_(x + wipe_tower_size(0)), scale_(y + wipe_tower_size(1)));
-    return {wt_min_corner, {wt_max_corner.x(), wt_min_corner.y()}, wt_max_corner, {wt_min_corner.x(), wt_max_corner.y()}};
-}
-
 void GLCanvas3D::render(bool only_init)
 {
     if (m_in_render) {
@@ -2022,6 +1990,7 @@ void GLCanvas3D::render(bool only_init)
             bottom_margin = SLIDER_BOTTOM_MARGIN;
         }
         wxGetApp().plater()->get_notification_manager()->render_notifications(*this, get_overlay_window_width(), bottom_margin, right_margin);
+        wxGetApp().plater()->get_dailytips()->render();
     }
 
     wxGetApp().imgui()->render();
@@ -2066,6 +2035,11 @@ void GLCanvas3D::render_calibration_thumbnail(ThumbnailData& thumbnail_data, uns
 void GLCanvas3D::select_curr_plate_all()
 {
     m_selection.add_curr_plate();
+    m_dirty = true;
+}
+
+void GLCanvas3D::select_object_from_idx(std::vector<int>& object_idxs) {
+    m_selection.add_object_from_idx(object_idxs);
     m_dirty = true;
 }
 
@@ -2630,21 +2604,39 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
 
                 const Print* print = m_process->fff_print();
                 float brim_width = print->wipe_tower_data(filaments_count).brim_width;
-                Vec3d wipe_tower_size = ppl.get_plate(plate_id)->estimate_wipe_tower_size(w, v);
+                const DynamicPrintConfig &print_cfg   = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+                Vec3d wipe_tower_size = ppl.get_plate(plate_id)->estimate_wipe_tower_size(print_cfg, w, v);
 
-                const float margin = 15.f;
+                const float margin = WIPE_TOWER_MARGIN;
                 BoundingBoxf3 plate_bbox = wxGetApp().plater()->get_partplate_list().get_plate(plate_id)->get_bounding_box();
                 coordf_t plate_bbox_x_max_local_coord = plate_bbox.max(0) - plate_origin(0);
                 coordf_t plate_bbox_y_max_local_coord = plate_bbox.max(1) - plate_origin(1);
+                bool need_update = false;
                 if (x + margin + wipe_tower_size(0) > plate_bbox_x_max_local_coord) {
                     x = plate_bbox_x_max_local_coord - wipe_tower_size(0) - margin;
+                    need_update = true;
+                }
+                else if (x < margin) {
+                    x = margin;
+                    need_update = true;
+                }
+                if (need_update) {
                     ConfigOptionFloat wt_x_opt(x);
                     dynamic_cast<ConfigOptionFloats *>(proj_cfg.option("wipe_tower_x"))->set_at(&wt_x_opt, plate_id, 0);
+                    need_update = false;
                 }
+
                 if (y + margin + wipe_tower_size(1) > plate_bbox_y_max_local_coord) {
                     y = plate_bbox_y_max_local_coord - wipe_tower_size(1) - margin;
+                    need_update = true;
+                }
+                else if (y < margin) {
+                    y = margin;
+                    need_update = true;
+                }
+                if (need_update) {
                     ConfigOptionFloat wt_y_opt(y);
-                    dynamic_cast<ConfigOptionFloats*>(proj_cfg.option("wipe_tower_y"))->set_at(&wt_y_opt, plate_id, 0);
+                    dynamic_cast<ConfigOptionFloats *>(proj_cfg.option("wipe_tower_y"))->set_at(&wt_y_opt, plate_id, 0);
                 }
 
                 int volume_idx_wipe_tower_new = m_volumes.load_wipe_tower_preview(
@@ -3105,6 +3097,9 @@ void GLCanvas3D::on_char(wxKeyEvent& evt)
 #endif /* __APPLE__ */
             post_event(SimpleEvent(EVT_GLTOOLBAR_DELETE_ALL));
             break;
+        case WXK_CONTROL_K:
+            post_event(SimpleEvent(EVT_GLTOOLBAR_CLONE));
+            break;
         default:            evt.Skip();
         }
     } else {
@@ -3368,8 +3363,8 @@ void GLCanvas3D::on_key(wxKeyEvent& evt)
                     wxGetApp().plater()->toggle_render_statistic_dialog();
                     m_dirty = true;
 #endif
-                }
-                else  if (evt.ShiftDown() && evt.ControlDown() && keyCode == WXK_RETURN) {
+                } else if ((evt.ShiftDown() && evt.ControlDown() && keyCode == WXK_RETURN) ||
+                    evt.ShiftDown() && evt.AltDown() && keyCode == WXK_RETURN) {
                     wxGetApp().plater()->toggle_show_wireframe();
                     m_dirty = true;
                 }
@@ -4718,6 +4713,13 @@ void GLCanvas3D::do_center()
     m_selection.center();
 }
 
+void GLCanvas3D::do_center_plate(const int plate_idx) {
+    if (m_model == nullptr)
+        return;
+
+    m_selection.center_plate(plate_idx);
+}
+
 void GLCanvas3D::do_mirror(const std::string& snapshot_type)
 {
     if (m_model == nullptr)
@@ -4878,6 +4880,12 @@ GLCanvas3D::WipeTowerInfo GLCanvas3D::get_wipe_tower_info(int plate_idx) const
             float brim_width = wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_float("prime_tower_brim_width");
             wti.m_bb.offset((brim_width));
 
+            // BBS: the wipe tower pos might be outside bed
+            PartPlate* plate = wxGetApp().plater()->get_partplate_list().get_plate(plate_idx);
+            Vec2d plate_size = plate->get_size();
+            wti.m_pos.x() = std::clamp(wti.m_pos.x(), 0.0, plate_size(0) - wti.m_bb.size().x());
+            wti.m_pos.y() = std::clamp(wti.m_pos.y(), 0.0, plate_size(1) - wti.m_bb.size().y());
+
             // BBS: add partplate logic
             wti.m_plate_idx = plate_idx;
             break;
@@ -4908,8 +4916,8 @@ std::vector<Vec2f> GLCanvas3D::get_empty_cells(const Vec2f start_point, const Ve
     Vec2d vmin(build_volume.min.x(), build_volume.min.y()), vmax(build_volume.max.x(), build_volume.max.y());
     BoundingBoxf bbox(vmin, vmax);
     std::vector<Vec2f> cells;
-    for (float x = bbox.min.x(); x < bbox.max.x(); x += step(0))
-        for (float y = bbox.min.y(); y < bbox.max.y(); y += step(1))
+    for (float x = bbox.min.x()+step(0)/2; x < bbox.max.x()-step(0)/2; x += step(0))
+        for (float y = bbox.min.y()+step(1)/2; y < bbox.max.y()-step(1)/2; y += step(1))
         {
             cells.emplace_back(x, y);
         }
@@ -5352,6 +5360,7 @@ bool GLCanvas3D::_render_arrange_menu(float left, float right, float bottom, flo
     std::string bed_shrink_x_key = "bed_shrink_x", bed_shrink_y_key = "bed_shrink_y";
     std::string multi_material_key = "allow_multi_materials_on_same_plate";
     std::string avoid_extrusion_key = "avoid_extrusion_cali_region";
+    std::string align_to_y_axis_key = "align_to_y_axis";
     std::string postfix;
     //BBS:
     bool seq_print = false;
@@ -5367,7 +5376,7 @@ bool GLCanvas3D::_render_arrange_menu(float left, float right, float bottom, flo
             //BBS:
             seq_print = true;
         } else {
-            dist_min     = 0.1f;
+            dist_min     = 0.0f;
             postfix     = "_fff";
         }
     }
@@ -5418,6 +5427,22 @@ bool GLCanvas3D::_render_arrange_menu(float left, float right, float bottom, flo
         settings_out.avoid_extrusion_cali_region = false;
     }
 
+    // Align to Y axis. Only enable this option when auto rotation not enabled
+    {
+        if (settings_out.enable_rotation) {  // do not allow align to Y axis if rotation is enabled
+            imgui->disabled_begin(true);
+            settings_out.align_to_y_axis = false;
+        }
+
+        if (imgui->bbl_checkbox(_L("Align to Y axis"), settings.align_to_y_axis)) {
+            settings_out.align_to_y_axis = settings.align_to_y_axis;
+            appcfg->set("arrange", align_to_y_axis_key, settings_out.align_to_y_axis ? "1" : "0");
+            settings_changed = true;
+        }
+
+        if (settings_out.enable_rotation == true) { imgui->disabled_end(); }
+    }
+
     ImGui::Separator();
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(15.0f, 10.0f));
     if (imgui->button(_L("Arrange"))) {
@@ -5432,8 +5457,16 @@ bool GLCanvas3D::_render_arrange_menu(float left, float right, float bottom, flo
         settings_out.distance = std::max(dist_min, settings_out.distance);
         //BBS: add specific arrange settings
         if (seq_print) settings_out.is_seq_print = true;
-        appcfg->set("arrange", dist_key.c_str(), float_to_string_decimal_point(settings_out.distance));
-        appcfg->set("arrange", rot_key.c_str(), settings_out.enable_rotation? "1" : "0");
+
+        if (auto printer_structure_opt = wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionEnum<PrinterStructure>>("printer_structure")) {
+            settings_out.align_to_y_axis = (printer_structure_opt->value == PrinterStructure::psI3);
+        }
+        else
+            settings_out.align_to_y_axis = false;
+
+        appcfg->set("arrange", dist_key, float_to_string_decimal_point(settings_out.distance));
+        appcfg->set("arrange", rot_key, settings_out.enable_rotation ? "1" : "0");
+        appcfg->set("arrange", align_to_y_axis_key, settings_out.align_to_y_axis ? "1" : "0");
         settings_changed = true;
     }
     ImGui::PopStyleVar(1);
@@ -6143,6 +6176,7 @@ bool GLCanvas3D::_init_main_toolbar()
         }
     };
     item.visibility_callback = GLToolbarItem::Default_Visibility_Callback;
+    item.left.toggable = false;
     item.enabling_callback = []()->bool { return wxGetApp().plater()->can_split_to_objects(); };
     if (!m_main_toolbar.add_item(item))
         return false;
@@ -7451,7 +7485,6 @@ void GLCanvas3D::_render_imgui_select_plate_toolbar()
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, scroll_col);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, button_active);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, button_hover);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(128.0f, 128.0f, 128.0f, 0.0f));
 
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 10.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -7467,7 +7500,7 @@ void GLCanvas3D::_render_imgui_select_plate_toolbar()
         imgui.begin(_L("Select Plate"), ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse);
     ImGui::SetWindowFontScale(1.2f);
 
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f * f_scale);
 
     ImVec2 size = ImVec2(button_width, button_height); // Size of the image we want to make visible
     ImVec4 bg_col = ImVec4(128.0f, 128.0f, 128.0f, 0.0f);
@@ -7492,7 +7525,7 @@ void GLCanvas3D::_render_imgui_select_plate_toolbar()
             }
             else {
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, button_hover);
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.42f, 0.42f, 0.42f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, button_hover);
             }
         }
 
@@ -7516,6 +7549,7 @@ void GLCanvas3D::_render_imgui_select_plate_toolbar()
                         m_sel_plate_toolbar.m_items[i]->selected = false;
                     }
                     all_plates_stats_item->selected = true;
+                    wxGetApp().plater()->update(true, true);
                     wxCommandEvent evt = wxCommandEvent(EVT_GLTOOLBAR_SLICE_ALL);
                     wxPostEvent(wxGetApp().plater(), evt);
                 }
@@ -7571,27 +7605,44 @@ void GLCanvas3D::_render_imgui_select_plate_toolbar()
         ImVec2 uv0 = ImVec2(0.0f, 1.0f);    // UV coordinates for lower-left
         ImVec2 uv1 = ImVec2(1.0f, 0.0f);    // UV coordinates in our texture
 
+        auto button_pos = ImGui::GetCursorPos();
+        ImGui::SetCursorPos(button_pos + margin);
+
+        ImGui::Image(item->texture_id, size, uv0, uv1, tint_col);
+
+        ImGui::SetCursorPos(button_pos);
+
+        // invisible button
+        auto button_size = size + margin + margin + ImVec2(2 * frame_padding, 2 * frame_padding);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f * f_scale);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.0f, .0f, .0f, .0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.0f, .0f, .0f, .0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(.0f, .0f, .0f, .0f));
         if (item->selected) {
-            ImGui::PushStyleColor(ImGuiCol_Button, button_active);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, button_active);
+            ImGui::PushStyleColor(ImGuiCol_Border, button_active);
         }
         else {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(128.0f, 128.0f, 128.0f, 0.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.42f, 0.42f, 0.42f, 1.0f));
+            if (ImGui::IsMouseHoveringRect(button_pos, button_pos + button_size)) {
+                ImGui::PushStyleColor(ImGuiCol_Border, button_hover);
+            }
+            else {
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(.0f, .0f, .0f, .0f));
+            }
         }
-
-        if (ImGui::ImageButton2(item->texture_id, size, uv0, uv1, frame_padding, bg_col, tint_col, margin)) {
+        if(ImGui::Button("##invisible_button", button_size)){
             if (m_process && !m_process->running()) {
                 all_plates_stats_item->selected = false;
                 item->selected = true;
                 // begin to slicing plate
+                if (item->slice_state != IMToolbarItem::SliceState::SLICED)
+                    wxGetApp().plater()->update(true, true);
                 wxCommandEvent* evt = new wxCommandEvent(EVT_GLTOOLBAR_SELECT_SLICED_PLATE);
                 evt->SetInt(i);
                 wxQueueEvent(wxGetApp().plater(), evt);
             }
         }
-
-        ImGui::PopStyleColor(2);
+        ImGui::PopStyleColor(4);
+        ImGui::PopStyleVar();
 
         ImVec2 start_pos = ImVec2(button_start_pos.x + frame_padding + margin.x, button_start_pos.y + frame_padding + margin.y);
         if (item->slice_state == IMToolbarItem::SliceState::UNSLICED) {
@@ -7622,7 +7673,7 @@ void GLCanvas3D::_render_imgui_select_plate_toolbar()
         ImGui::PopID();
     }
     ImGui::SetWindowFontScale(1.0f);
-    ImGui::PopStyleColor(9);
+    ImGui::PopStyleColor(8);
     ImGui::PopStyleVar(5);
 
     if (ImGui::IsWindowHovered() || is_hovered) {

@@ -8,8 +8,9 @@
 #include "Geometry/ConvexHull.hpp"
 #include "I18N.hpp"
 #include "ShortestPath.hpp"
-#include "SupportMaterial.hpp"
+#include "Support/SupportMaterial.hpp"
 #include "Thread.hpp"
+#include "Time.hpp"
 #include "GCode.hpp"
 #include "GCode/WipeTower.hpp"
 #include "Utils.hpp"
@@ -76,6 +77,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "printable_area",
         //BBS: add bed_exclude_area
         "bed_exclude_area",
+        "thumbnail_size",
         "before_layer_change_gcode",
         "enable_pressure_advance",
         "pressure_advance",
@@ -87,6 +89,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "deretraction_speed",
         "close_fan_the_first_x_layers",
         "machine_end_gcode",
+        "printing_by_object_gcode",
         "filament_end_gcode",
         "post_process",
         "extruder_clearance_height_to_rod",
@@ -116,6 +119,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "textured_plate_temp_initial_layer",
         "gcode_add_line_number",
         "layer_change_gcode",
+        "time_lapse_gcode",
         "fan_min_speed",
         "fan_max_speed",
         "printable_height",
@@ -135,6 +139,8 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "retract_restart_extra",
         "retract_restart_extra_toolchange",
         "retraction_speed",
+        "retract_lift_above",
+        "retract_lift_below",
         "slow_down_layer_time",
         "standby_temperature_delta",
         "machine_start_gcode",
@@ -148,6 +154,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "chamber_temperatures",
         "required_nozzle_HRC",
         "upward_compatible_machine",
+        "is_infill_first",
         //OrcaSlicer
         "seam_gap",
         "wipe_speed"
@@ -161,7 +168,11 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "inner_wall_acceleration",
         "sparse_infill_acceleration",
         "exclude_object",
-        "use_relative_e_distances"
+        "use_relative_e_distances",
+        "activate_air_filtration",
+        "during_print_exhaust_fan_speed",
+        "complete_print_exhaust_fan_speed",
+        "use_firmware_retraction"
     };
 
     static std::unordered_set<std::string> steps_ignore;
@@ -198,7 +209,6 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             osteps.emplace_back(posSlice);
         } else if (
                opt_key == "print_sequence"
-            || opt_key == "chamber_temperatures"
             || opt_key == "filament_type"
             || opt_key == "nozzle_temperature_initial_layer"
             || opt_key == "filament_minimal_purge_on_wipe_tower"
@@ -214,6 +224,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             || opt_key == "enable_prime_tower"
             || opt_key == "prime_tower_width"
             || opt_key == "prime_tower_brim_width"
+            || opt_key == "first_layer_print_sequence"
             //|| opt_key == "wipe_tower_bridging"
             || opt_key == "wipe_tower_no_sparse_layers"
             || opt_key == "flush_volumes_matrix"
@@ -243,7 +254,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             //|| opt_key == "resolution"
             //BBS: when enable arc fitting, we must re-generate perimeter
             || opt_key == "enable_arc_fitting"
-            || opt_key == "wall_infill_order") {
+            || opt_key == "wall_sequence") {
             osteps.emplace_back(posPerimeters);
             osteps.emplace_back(posInfill);
             osteps.emplace_back(posSupportMaterial);
@@ -526,7 +537,7 @@ StringObjectException Print::sequential_print_clearance_valid(const Print &print
                 auto tmp = offset(convex_hull_no_offset,
                         // Shrink the extruder_clearance_radius a tiny bit, so that if the object arrangement algorithm placed the objects
                         // exactly by satisfying the extruder_clearance_radius, this test will not trigger collision.
-                        float(scale_(0.5 * print.config().extruder_clearance_max_radius.value - EPSILON)),
+                        float(scale_(0.5 * print.config().extruder_clearance_max_radius.value - 0.1)),
                         jtRound, scale_(0.1));
                 if (!tmp.empty()) { // tmp may be empty due to clipper's bug, see STUDIO-2452
                     convex_hull = tmp.front();
@@ -733,7 +744,7 @@ StringObjectException Print::sequential_print_clearance_valid(const Print &print
         {
             auto inst = print_instance_with_bounding_box[k].print_instance;
             // 只需要考虑喷嘴到滑杆的偏移量，这个比整个工具头的碰撞半径要小得多
-            auto bbox = print_instance_with_bounding_box[k].bounding_box.inflated(-scale_(0.5 * print.config().extruder_clearance_radius.value));
+            auto bbox = print_instance_with_bounding_box[k].bounding_box.inflated(-scale_(0.5 * print.config().extruder_clearance_max_radius.value));
             auto iy1 = bbox.min.y();
             auto iy2 = bbox.max.y();
             (const_cast<ModelInstance*>(inst->model_instance))->arrange_order = k+1;
@@ -891,35 +902,58 @@ static StringObjectException layered_print_cleareance_valid(const Print &print, 
 
 bool Print::check_multi_filaments_compatibility(const std::vector<std::string>& filament_types)
 {
-    static std::map<std::string, bool> filament_is_high_temp{
-            {"PLA",     false},
-            {"PLA-CF",  false},
-            //{"PETG",    true},
-            {"ABS",     true},
-            {"TPU",     false},
-            {"PA",      true},
-            {"PA-CF",   true},
-            {"PET-CF",  true},
-            {"PC",      true},
-            {"ASA",     true},
-            {"HIPS",    true}
-    };
-
     bool has_high_temperature_filament = false;
     bool has_low_temperature_filament = false;
 
-    for (const auto& type : filament_types)
-        if (filament_is_high_temp.find(type) != filament_is_high_temp.end()) {
-            if (filament_is_high_temp[type])
-                has_high_temperature_filament = true;
-            else
-                has_low_temperature_filament = true;
-        }
+    for (const auto& type : filament_types) {
+        if (get_filament_temp_type(type) ==FilamentTempType::HighTemp)
+            has_high_temperature_filament = true;
+        else if (get_filament_temp_type(type) == FilamentTempType::LowTemp)
+            has_low_temperature_filament = true;
+    }
 
     if (has_high_temperature_filament && has_low_temperature_filament)
         return false;
 
     return true;
+}
+
+bool Print::is_filaments_compatible(const std::vector<int>& filament_types)
+{
+    bool has_high_temperature_filament = false;
+    bool has_low_temperature_filament = false;
+
+    for (const auto& type : filament_types) {
+        if (type == FilamentTempType::HighTemp)
+            has_high_temperature_filament = true;
+        else if (type == FilamentTempType::LowTemp)
+            has_low_temperature_filament = true;
+    }
+
+    if (has_high_temperature_filament && has_low_temperature_filament)
+        return false;
+
+    return true;
+}
+int Print::get_compatible_filament_type(const std::set<int>& filament_types)
+{
+    bool has_high_temperature_filament = false;
+    bool has_low_temperature_filament = false;
+
+    for (const auto& type : filament_types) {
+        if (type == FilamentTempType::HighTemp)
+            has_high_temperature_filament = true;
+        else if (type == FilamentTempType::LowTemp)
+            has_low_temperature_filament = true;
+    }
+
+    if (has_high_temperature_filament && has_low_temperature_filament)
+        return HighLowCompatible;
+    else if (has_high_temperature_filament)
+        return HighTemp;
+    else if (has_low_temperature_filament)
+        return LowTemp;
+    return HighLowCompatible;
 }
 
 //BBS: this function is used to check whether multi filament can be printed
@@ -1131,7 +1165,7 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
         	} else if (extrusion_width_min <= layer_height) {
                 err_msg = L("Too small line width");
 				return false;
-			} else if (extrusion_width_max >= max_nozzle_diameter * 2.5) {
+			} else if (extrusion_width_max > max_nozzle_diameter * 2.5) {
                 err_msg = L("Too large line width");
 				return false;
 			}
@@ -1195,11 +1229,23 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
             if (layer_height > min_nozzle_diameter)
                 return  {L("Layer height cannot exceed nozzle diameter"), object, "layer_height"};
 
+            double min_layer_height_from_nozzle = 0.01;
+            double max_layer_height_from_nozzle = std::numeric_limits<double>::max();
+            for (unsigned int extruder_id : extruders) {
+                min_layer_height_from_nozzle = std::max(min_layer_height_from_nozzle, m_config.min_layer_height.get_at(extruder_id));
+                max_layer_height_from_nozzle = std::min(max_layer_height_from_nozzle, m_config.max_layer_height.get_at(extruder_id));
+            }
+
+            if (layer_height > max_layer_height_from_nozzle ||
+                layer_height < min_layer_height_from_nozzle) {
+                return  { L("Layer height cannot exceed the limit in Printer Settings -> Extruder -> Layer height limits"), object, "layer_height", STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT };
+            }
+
             for (auto range : object->m_model_object->layer_config_ranges) {
                 double range_layer_height = range.second.opt_float("layer_height");
-                if (range_layer_height > object->m_slicing_params.max_layer_height ||
-                    range_layer_height < object->m_slicing_params.min_layer_height)
-                    return  { L("Layer height cannot exceed nozzle diameter"), nullptr, "layer_height" };
+                if (range_layer_height > max_layer_height_from_nozzle ||
+                    range_layer_height < min_layer_height_from_nozzle)
+                    return  { L("Layer height cannot exceed the limit in Printer Settings -> Extruder -> Layer height limits"), nullptr, "layer_height", STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT };
             }
 
             // Validate extrusion widths.
@@ -1457,23 +1503,32 @@ std::map<ObjectID, unsigned int> getObjectExtruderMap(const Print& print) {
     std::map<ObjectID, unsigned int> objectExtruderMap;
     for (const PrintObject* object : print.objects()) {
         // BBS
-        unsigned int objectFirstLayerFirstExtruder = print.config().filament_diameter.size();
-        auto firstLayerRegions = object->layers().front()->regions();
-        if (!firstLayerRegions.empty()) {
-            for (const LayerRegion* regionPtr : firstLayerRegions) {
-                if (regionPtr -> has_extrusions())
-                    objectFirstLayerFirstExtruder = std::min(objectFirstLayerFirstExtruder,
-                        regionPtr->region().extruder(frExternalPerimeter));
+        if (object->object_first_layer_wall_extruders.empty()){
+            unsigned int objectFirstLayerFirstExtruder = print.config().filament_diameter.size();
+            auto firstLayerRegions = object->layers().front()->regions();
+            if (!firstLayerRegions.empty()) {
+                for (const LayerRegion* regionPtr : firstLayerRegions) {
+                    if (regionPtr->has_extrusions())
+                        objectFirstLayerFirstExtruder = std::min(objectFirstLayerFirstExtruder,
+                          regionPtr->region().extruder(frExternalPerimeter));
+                }
             }
+            objectExtruderMap.insert(std::make_pair(object->id(), objectFirstLayerFirstExtruder));
         }
-        objectExtruderMap.insert(std::make_pair(object->id(), objectFirstLayerFirstExtruder));
+        else {
+            objectExtruderMap.insert(std::make_pair(object->id(), object->object_first_layer_wall_extruders.front()));
+        }
     }
     return objectExtruderMap;
 }
 
 // Slicing process, running at a background thread.
-void Print::process(bool use_cache)
+void Print::process(long long *time_cost_with_cache, bool use_cache)
 {
+    long long start_time = 0, end_time = 0;
+    if (time_cost_with_cache)
+        *time_cost_with_cache = 0;
+
     name_tbb_thread_pool_threads_set_locale();
 
     //compute the PrintObject with the same geometries
@@ -1625,6 +1680,16 @@ void Print::process(bool use_cache)
                 }
             }
         );
+
+        for (PrintObject* obj : m_objects) {
+            if (need_slicing_objects.count(obj) != 0) {
+                obj->detect_overhangs_for_lift();
+            }
+            else {
+                if (obj->set_started(posDetectOverhangsForLift))
+                    obj->set_done(posDetectOverhangsForLift);
+            }
+        }
     }
     else {
         for (PrintObject *obj : m_objects) {
@@ -1641,20 +1706,25 @@ void Print::process(bool use_cache)
                     obj->set_done(posIroning);
                 if (obj->set_started(posSupportMaterial))
                     obj->set_done(posSupportMaterial);
+                if (obj->set_started(posDetectOverhangsForLift))
+                    obj->set_done(posDetectOverhangsForLift);
             }
             else {
                 obj->make_perimeters();
                 obj->infill();
                 obj->ironing();
                 obj->generate_support_material();
+                obj->detect_overhangs_for_lift();
             }
         }
     }
 
     for (PrintObject *obj : m_objects)
     {
-        if (need_slicing_objects.count(obj) == 0)
+        if (need_slicing_objects.count(obj) == 0) {
             obj->copy_layers_from_shared_object();
+            obj->copy_layers_overhang_from_shared_object();
+        }
     }
 
     if (this->set_started(psWipeTower)) {
@@ -1672,6 +1742,9 @@ void Print::process(bool use_cache)
     }
     if (this->set_started(psSkirtBrim)) {
         this->set_status(70, L("Generating skirt & brim"));
+
+        if (time_cost_with_cache)
+            start_time = (long long)Slic3r::Utils::get_current_time_utc();
 
         m_skirt.clear();
         m_skirt_convex_hull.clear();
@@ -1757,6 +1830,11 @@ void Print::process(bool use_cache)
 
         this->finalize_first_layer_convex_hull();
         this->set_done(psSkirtBrim);
+
+        if (time_cost_with_cache) {
+            end_time = (long long)Slic3r::Utils::get_current_time_utc();
+            *time_cost_with_cache = *time_cost_with_cache + end_time - start_time;
+        }
     }
     //BBS
     for (PrintObject *obj : m_objects) {
@@ -1775,19 +1853,15 @@ void Print::process(bool use_cache)
     }
 
     // BBS
+    bool has_adaptive_layer_height = false;
     for (PrintObject* obj : m_objects) {
-        if (need_slicing_objects.count(obj) != 0) {
-            obj->detect_overhangs_for_lift();
-        }
-        else {
-            obj->copy_layers_overhang_from_shared_object();
-            if (obj->set_started(posDetectOverhangsForLift))
-                obj->set_done(posDetectOverhangsForLift);
+        if (obj->model_object()->layer_height_profile.empty() == false) {
+            has_adaptive_layer_height = true;
+            break;
         }
     }
-
-    // BBS
-    if(!m_no_check)
+    // TODO adaptive layer height won't work with conflict checker because m_fake_wipe_tower's path is generated using fixed layer height
+    if(!m_no_check && !has_adaptive_layer_height)
     {
         using Clock                 = std::chrono::high_resolution_clock;
         auto            startTime   = Clock::now();
@@ -2077,6 +2151,76 @@ Vec2d Print::translate_to_print_space(const Vec2d& point) const {
 
 Vec2d Print::translate_to_print_space(const Point& point) const {
     return Vec2d(unscaled(point.x()) - m_origin(0), unscaled(point.y()) - m_origin(1));
+}
+
+FilamentTempType Print::get_filament_temp_type(const std::string& filament_type)
+{
+    const static std::string HighTempFilamentStr = "high_temp_filament";
+    const static std::string LowTempFilamentStr = "low_temp_filament";
+    const static std::string HighLowCompatibleFilamentStr = "high_low_compatible_filament";
+    static std::unordered_map<std::string, std::unordered_set<std::string>>filament_temp_type_map;
+
+    if (filament_temp_type_map.empty()) {
+        fs::path file_path = fs::path(resources_dir()) / "info" / "filament_info.json";
+        std::ifstream in(file_path.string());
+        json j;
+        try{
+            j = json::parse(in);
+            in.close();
+            auto&&high_temp_filament_arr =j[HighTempFilamentStr].get < std::vector<std::string>>();
+            filament_temp_type_map[HighTempFilamentStr] = std::unordered_set<std::string>(high_temp_filament_arr.begin(), high_temp_filament_arr.end());
+            auto&& low_temp_filament_arr = j[LowTempFilamentStr].get < std::vector<std::string>>();
+            filament_temp_type_map[LowTempFilamentStr] = std::unordered_set<std::string>(low_temp_filament_arr.begin(), low_temp_filament_arr.end());
+            auto&& high_low_compatible_filament_arr = j[HighLowCompatibleFilamentStr].get < std::vector<std::string>>();
+            filament_temp_type_map[HighLowCompatibleFilamentStr] = std::unordered_set<std::string>(high_low_compatible_filament_arr.begin(), high_low_compatible_filament_arr.end());
+        }
+        catch (const json::parse_error& err){
+            in.close();
+            BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": parse " << file_path.string() << " got a nlohmann::detail::parse_error, reason = " << err.what();
+            filament_temp_type_map[HighTempFilamentStr] = {"ABS","ASA","PC","PA","PA-CF","PA6-CF","PET-CF","PPS","PPS-CF","PPA-GF","PPA-CF"};
+            filament_temp_type_map[LowTempFilamentStr] = {"PLA","TPU","PLA-CF","PLA-AERO","PVA"};
+            filament_temp_type_map[HighLowCompatibleFilamentStr] = { "HIPS","PETG" };
+        }
+    }
+
+    if (filament_temp_type_map[HighLowCompatibleFilamentStr].find(filament_type) != filament_temp_type_map[HighLowCompatibleFilamentStr].end())
+        return HighLowCompatible;
+    if (filament_temp_type_map[HighTempFilamentStr].find(filament_type) != filament_temp_type_map[HighTempFilamentStr].end())
+        return HighTemp;
+    if (filament_temp_type_map[LowTempFilamentStr].find(filament_type) != filament_temp_type_map[LowTempFilamentStr].end())
+        return LowTemp;
+    return Undefine;
+}
+
+int Print::get_hrc_by_nozzle_type(const NozzleType&type)
+{
+    static std::map<std::string, int>nozzle_type_to_hrc;
+    if (nozzle_type_to_hrc.empty()) {
+        fs::path file_path = fs::path(resources_dir()) / "info" / "nozzle_info.json";
+        std::ifstream in(file_path.string());
+        json j;
+        try {
+            j = json::parse(in);
+            in.close();
+            for (const auto& elem : j["nozzle_hrc"].items())
+                nozzle_type_to_hrc[elem.key()] = elem.value();
+        }
+        catch (const json::parse_error& err) {
+            in.close();
+            BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": parse " << file_path.string() << " got a nlohmann::detail::parse_error, reason = " << err.what();
+            nozzle_type_to_hrc = {
+                {"hardened_steel",55},
+                {"stainless_steel",20},
+                {"brass",2},
+                {"undefine",0}
+            };
+        }
+    }
+    auto iter = nozzle_type_to_hrc.find(NozzleTypeEumnToStr[type]);
+    if (iter != nozzle_type_to_hrc.end())
+        return iter->second;
+    //0 represents undefine
+    return 0;
 }
 
 void Print::finalize_first_layer_convex_hull()
@@ -2398,6 +2542,8 @@ std::string PrintStatistics::finalize_output_path(const std::string &path_in) co
 #define JSON_LAYER_ID                  "layer_id"
 #define JSON_LAYER_SLICED_POLYGONS    "sliced_polygons"
 #define JSON_LAYER_SLLICED_BBOXES      "sliced_bboxes"
+#define JSON_LAYER_OVERHANG_POLYGONS    "overhang_polygons"
+#define JSON_LAYER_OVERHANG_BBOX       "overhang_bbox"
 
 #define JSON_SUPPORT_LAYER_ISLANDS                  "support_islands"
 #define JSON_SUPPORT_LAYER_FILLS                    "support_fills"
@@ -3034,6 +3180,19 @@ void extract_layer(const json& layer_json, Layer& layer) {
         layer.lslices_bboxes.push_back(std::move(bbox));
     }
 
+    //overhang_polygons
+    int overhang_polygons_count = layer_json[JSON_LAYER_OVERHANG_POLYGONS].size();
+    for (int polygon_index = 0; polygon_index < overhang_polygons_count; polygon_index++)
+    {
+        ExPolygon polygon;
+
+        polygon = layer_json[JSON_LAYER_OVERHANG_POLYGONS][polygon_index];
+        layer.loverhangs.push_back(std::move(polygon));
+    }
+
+    //overhang_box
+    layer.loverhangs_bbox = layer_json[JSON_LAYER_OVERHANG_BBOX];
+
     //layer_regions
     int layer_region_count = layer.region_count();
     for (int layer_region_index = 0; layer_region_index < layer_region_count; layer_region_index++)
@@ -3109,7 +3268,7 @@ int Print::export_cached_data(const std::string& directory, bool with_space)
     boost::filesystem::path directory_path(directory);
 
     auto convert_layer_to_json = [](json& layer_json, const Layer* layer) {
-        json slice_polygons_json = json::array(), slice_bboxs_json = json::array(), layer_regions_json = json::array();
+        json slice_polygons_json = json::array(), slice_bboxs_json = json::array(), overhang_polygons_json = json::array(), layer_regions_json = json::array();
         layer_json[JSON_LAYER_PRINT_Z] = layer->print_z;
         layer_json[JSON_LAYER_HEIGHT] = layer->height;
         layer_json[JSON_LAYER_SLICE_Z] = layer->slice_z;
@@ -3131,6 +3290,16 @@ int Print::export_cached_data(const std::string& directory, bool with_space)
             slice_bboxs_json.push_back(std::move(bbox_json));
         }
         layer_json[JSON_LAYER_SLLICED_BBOXES] = std::move(slice_bboxs_json);
+
+        //overhang_polygons
+        for (const ExPolygon& overhang_polygon : layer->loverhangs) {
+            json overhang_polygon_json = overhang_polygon;
+            overhang_polygons_json.push_back(std::move(overhang_polygon_json));
+        }
+        layer_json[JSON_LAYER_OVERHANG_POLYGONS] = std::move(overhang_polygons_json);
+
+        //overhang_box
+        layer_json[JSON_LAYER_OVERHANG_BBOX] = layer->loverhangs_bbox;
 
         for (const LayerRegion *layer_region : layer->regions()) {
             json region_json = *layer_region;

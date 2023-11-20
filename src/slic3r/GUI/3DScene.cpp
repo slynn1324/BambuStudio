@@ -89,6 +89,7 @@ std::vector<std::array<float, 4>> get_extruders_colors()
 }
 float FullyTransparentMaterialThreshold  = 0.1f;
 float FullTransparentModdifiedToFixAlpha = 0.3f;
+const float BlackThreshold               = 0.2f;
 std::array<float, 4> adjust_color_for_rendering(const std::array<float, 4> &colors)
 {
    if (colors[3] < FullyTransparentMaterialThreshold) { // completely transparent
@@ -98,7 +99,15 @@ std::array<float, 4> adjust_color_for_rendering(const std::array<float, 4> &colo
                 new_color[2] = 1;
                 new_color[3] = FullTransparentModdifiedToFixAlpha;
                 return new_color;
-    } 
+    }
+    else if ((colors[0] < BlackThreshold) && (colors[1] < BlackThreshold) && (colors[2] < BlackThreshold)) { // black filament deal
+        std::array<float, 4> new_color;
+        new_color[0] = BlackThreshold;
+        new_color[1] = BlackThreshold;
+        new_color[2] = BlackThreshold;
+        new_color[3] = colors[3];
+        return new_color;
+    }
     return colors;
 }
 
@@ -1075,6 +1084,7 @@ int GLVolumeCollection::load_object_volume(
     GLVolume& v = *this->volumes.back();
     v.set_color(color_from_model_volume(*model_volume));
     v.name = model_volume->name;
+    v.is_text_shape = model_volume->get_text_info().m_text.empty();
 #if ENABLE_SMOOTH_NORMALS
     v.indexed_vertex_array.load_mesh(mesh, true);
 #else
@@ -1314,6 +1324,7 @@ void GLVolumeCollection::render(
         glsafe(::glEnableClientState(GL_VERTEX_ARRAY));
         glsafe(::glEnableClientState(GL_NORMAL_ARRAY));
 
+        shader->set_uniform("is_text_shape", volume.first->is_text_shape);
         shader->set_uniform("uniform_color", volume.first->render_color);
         shader->set_uniform("z_range", m_z_range, 2);
         shader->set_uniform("clipping_plane", m_clipping_plane, 4);

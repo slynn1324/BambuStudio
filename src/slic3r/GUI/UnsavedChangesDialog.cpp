@@ -1349,6 +1349,10 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
             opt_key == "sparse_infill_pattern",
             opt_idx);
     }
+    case coPoint: {
+        Vec2d val = config.opt<ConfigOptionPoint>(opt_key)->value;
+        return from_u8((boost::format("[%1%]") % ConfigOptionPoint(val).serialize()).str());
+    }
     case coPoints: {
         //BBS: add bed_exclude_area
         if (opt_key == "printable_area") {
@@ -1359,7 +1363,9 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
         else if (opt_key == "bed_exclude_area") {
             return get_thumbnails_string(config.option<ConfigOptionPoints>(opt_key)->values);
         }
-
+        else if (opt_key == "thumbnail_size") {
+            return get_thumbnails_string(config.option<ConfigOptionPoints>(opt_key)->values);
+        }
         Vec2d val = config.opt<ConfigOptionPoints>(opt_key)->get_at(opt_idx);
         return from_u8((boost::format("[%1%]") % ConfigOptionPoint(val).serialize()).str());
     }
@@ -1495,15 +1501,33 @@ void UnsavedChangesDialog::update_list()
             for (auto g = 0; g < class_g_list[gname].size(); g++) {
 
                  //first group
-                // if (g == 0) {
-                //    auto citem_title = new wxStaticText(citem, wxID_ANY, gname, wxDefaultPosition, wxDefaultSize, 0);
-                //    //citem_title->SetForegroundColour(GREY900);
-                //    auto block_title = new wxWindow(citem, wxID_ANY, wxDefaultPosition, wxSize(0, 0));
+                if (g == 0) {
+                     auto panel_item = new wxWindow(m_scrolledWindow, -1, wxDefaultPosition, wxSize(-1, UNSAVE_CHANGE_DIALOG_ITEM_HEIGHT));
+                     panel_item->SetBackgroundColour(GREY200);
 
-                //
-                //    sizer_citem->Add(block_title, 0, wxEXPAND | wxLEFT, 20);
-                //    sizer_citem->Add(citem_title, 0, wxALL, (list_item_height - citem_title->GetSize().GetHeight()) / 2);
-                //}
+                     wxBoxSizer *sizer_item = new wxBoxSizer(wxHORIZONTAL);
+
+                     auto panel_left = new wxPanel(panel_item, wxID_ANY, wxDefaultPosition, wxSize(UNSAVE_CHANGE_DIALOG_FIRST_VALUE_WIDTH, -1), wxTAB_TRAVERSAL);
+                     panel_left->SetBackgroundColour(GREY200);
+
+                     wxBoxSizer *sizer_left_v = new wxBoxSizer(wxVERTICAL);
+
+                     auto text_left = new wxStaticText(panel_left, wxID_ANY, gname, wxDefaultPosition, wxSize(-1, -1), 0);
+                     text_left->SetFont(::Label::Head_13);
+                     text_left->Wrap(-1);
+                     text_left->SetForegroundColour(GREY700);
+                     text_left->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_INFOTEXT));
+
+                     sizer_left_v->Add(text_left, 0, wxLEFT, 37);
+
+                     panel_left->SetSizer(sizer_left_v);
+                     panel_left->Layout();
+                     sizer_item->Add(panel_left, 0, wxALIGN_CENTER, 0);
+
+                     panel_item->SetSizer(sizer_item);
+                     panel_item->Layout();
+                     m_listsizer->Add(panel_item, 0, wxEXPAND, 0);
+                }
 
                 auto data = class_g_list[gname][g];
 
@@ -1523,7 +1547,7 @@ void UnsavedChangesDialog::update_list()
                 text_left->SetForegroundColour(GREY700);
                 text_left->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_INFOTEXT));
 
-                sizer_left_v->Add(text_left, 0, wxLEFT, 37 );
+                sizer_left_v->Add(text_left, 0, wxLEFT, 51 );
 
                 panel_left->SetSizer(sizer_left_v);
                 panel_left->Layout();

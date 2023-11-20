@@ -1,5 +1,6 @@
 {
   "type": "machine",
+  "setting_id": "GM_CREALITY_011",
   "name": "Creality CR-6 Max 0.4 nozzle",
   "from": "system",
   "instantiation": "true",
@@ -19,6 +20,9 @@
     "5x395"
   ],
   "printable_height": "400",
+  "retract_lift_below":[
+    "399"
+	],
   "nozzle_type": "undefine",
   "auxiliary_fan": "0"
 }

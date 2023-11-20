@@ -229,7 +229,7 @@ private:
 #endif
 
 //import model from mall 
-    std::string     m_download_file_url;
+    wxString       m_download_file_url;
    
 //#ifdef _WIN32
     wxColour        m_color_label_modified;
@@ -274,6 +274,7 @@ private:
     Slic3r::DeviceManager* m_device_manager { nullptr };
     NetworkAgent* m_agent { nullptr };
     std::vector<std::string> need_delete_presets;   // store setting ids of preset
+    std::vector<bool> m_create_preset_blocked { false, false, false, false, false, false }; // excceed limit
     bool m_networking_compatible { false };
     bool m_networking_need_update { false };
     bool m_networking_cancel_update { false };
@@ -288,10 +289,11 @@ private:
     HMSQuery    *hms_query { nullptr };
 
     boost::thread    m_sync_update_thread;
-    bool             enable_sync = false;
+    std::shared_ptr<int> m_user_sync_token;
     bool             m_is_dark_mode{ false };
     bool             m_adding_script_handler { false };
     bool             m_side_popup_status{false};
+    bool             m_show_http_errpr_msgdlg{false};
     wxString         m_info_dialog_content;
     HttpServer       m_http_server;
 
@@ -430,9 +432,6 @@ public:
     void            on_set_selected_machine(wxCommandEvent& evt);
     void            on_user_login(wxCommandEvent &evt);
     void            on_user_login_handle(wxCommandEvent& evt);
-    void            start_check_network_state();
-    bool            check_network_state();
-    void            start_test_url(std::string url);
     void            enable_user_preset_folder(bool enable);
 
     // BBS
@@ -474,6 +473,7 @@ public:
     bool            load_language(wxString language, bool initial);
 
     Tab*            get_tab(Preset::Type type);
+    Tab*            get_plate_tab();
     Tab*            get_model_tab(bool part = false);
     Tab*            get_layer_tab();
     ConfigOptionMode get_mode();
@@ -576,6 +576,7 @@ public:
 
     std::vector<Tab *>      tabs_list;
     std::vector<Tab *>      model_tabs_list;
+    Tab*                    plate_tab;
 
 	RemovableDriveManager* removable_drive_manager() { return m_removable_drive_manager.get(); }
 	//OtherInstanceMessageHandler* other_instance_message_handler() { return m_other_instance_message_handler.get(); }
@@ -622,6 +623,7 @@ public:
     bool            check_networking_version();
     void            cancel_networking_install();
     void            restart_networking();
+    void            check_config_updates_from_updater() { check_updates(false); }
 
 private:
     int             updating_bambu_networking();

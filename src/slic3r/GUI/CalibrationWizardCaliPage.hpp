@@ -27,10 +27,13 @@ public:
     void update_basic_print_data(bool def, float weight = 0.0, int prediction = 0);
     void reset_printing_values();
     void clear_last_job_status();
+    void set_pa_cali_image(int stage);
 
     void on_device_connected(MachineObject* obj) override;
 
     void set_cali_method(CalibrationMethod method) override;
+    virtual bool Show(bool show = true) override;
+    void msw_rescale() override;
 
 protected:
     float get_selected_calibration_nozzle_dia(MachineObject* obj);

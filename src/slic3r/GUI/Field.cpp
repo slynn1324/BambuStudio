@@ -66,6 +66,12 @@ wxString double_to_string(double const value, const int max_precision /*= 4*/)
     return s;
 }
 
+wxString get_thumbnail_string(const Vec2d& value)
+{
+    wxString ret_str = wxString::Format("%.2fx%.2f", value[0], value[1]);
+    return ret_str;
+}
+
 wxString get_thumbnails_string(const std::vector<Vec2d>& values)
 {
     wxString ret_str;
@@ -125,7 +131,9 @@ void Field::PostInitialize()
 	// For the mode, when settings are in non-modal dialog, neither dialog nor tabpanel doesn't receive wxEVT_KEY_UP event, when some field is selected.
 	// So, like a workaround check wxEVT_KEY_UP event for the Filed and switch between tabs if Ctrl+(1-4) was pressed
     if (getWindow()) {
-        if (m_opt.readonly) getWindow()->Disable();
+        if (m_opt.readonly) { 
+            this->disable();
+        }
 		getWindow()->Bind(wxEVT_KEY_UP, [](wxKeyEvent& evt) {
 		    if ((evt.GetModifiers() & wxMOD_CONTROL) != 0) {
 			    int tab_id = -1;
@@ -367,6 +375,34 @@ void Field::get_value_by_opt_type(wxString& str, const bool check_value/* = true
 
         m_value = into_u8(str);
 		break; }
+    case coPoint:{
+        Vec2d out_value;
+        str.Replace(" ", wxEmptyString, true);
+        if (!str.IsEmpty()) {
+            bool              invalid_val      = true;
+            double            x, y;
+            wxStringTokenizer thumbnail(str, "x");
+            if (thumbnail.HasMoreTokens()) {
+                wxString x_str = thumbnail.GetNextToken();
+                if (x_str.ToDouble(&x) && thumbnail.HasMoreTokens()) {
+                    wxString y_str = thumbnail.GetNextToken();
+                    if (y_str.ToDouble(&y) && !thumbnail.HasMoreTokens()) {
+                        out_value  = Vec2d(x, y);
+                        invalid_val = false;
+                    }
+                }
+            }
+
+            if (invalid_val) {
+                wxString text_value;
+                if (!m_value.empty()) text_value = get_thumbnail_string(boost::any_cast<Vec2d>(m_value));
+                set_value(text_value, true);
+                show_error(m_parent, format_wxstr(_L("Invalid format. Expected vector format: \"%1%\""), "XxY, XxY, ..."));
+            }
+        }
+
+        m_value = out_value;
+        break; }
 
     case coPoints: {
         std::vector<Vec2d> out_values;
@@ -386,6 +422,12 @@ void Field::get_value_by_opt_type(wxString& str, const bool check_value/* = true
                         if (y_str.ToDouble(&y) && !thumbnail.HasMoreTokens()) {
                             if (m_opt_id == "bed_exclude_area") {
                                 if (0 <= x && x <= 256 && 0 <= y && y <= 256) {
+                                    out_values.push_back(Vec2d(x, y));
+                                    continue;
+                                }
+                            }
+                            else if (m_opt_id == "printable_area") {
+                                if (0 <= x && x <= 1000 && 0 <= y && y <= 1000) {
                                     out_values.push_back(Vec2d(x, y));
                                     continue;
                                 }
@@ -446,7 +488,7 @@ void Field::sys_color_changed()
 template<class T>
 bool is_defined_input_value(wxWindow* win, const ConfigOptionType& type)
 {
-    if (!win || (static_cast<T*>(win)->GetValue().empty() && type != coString && type != coStrings && type != coPoints))
+    if (!win || (static_cast<T*>(win)->GetValue().empty() && type != coString && type != coStrings && type != coPoints && type != coPoint))
         return false;
     return true;
 }
@@ -495,6 +537,9 @@ void TextCtrl::BUILD() {
 		text_value = vec->get_at(m_opt_idx);
 		break;
 	}
+    case coPoint:
+        text_value = get_thumbnail_string(m_opt.get_default_value<ConfigOptionPoint>()->value);
+        break;
     case coPoints:
         text_value = get_thumbnails_string(m_opt.get_default_value<ConfigOptionPoints>()->values);
         break;
@@ -1296,7 +1341,7 @@ void Choice::set_value(const boost::any& value, bool change_event)
         if (m_opt_id.compare("host_type") == 0 && val != 0 &&
 			m_opt.enum_values.size() > field->GetCount()) // for case, when PrusaLink isn't used as a HostType
 			val--;
-        if (m_opt_id == "top_surface_pattern" || m_opt_id == "bottom_surface_pattern" || m_opt_id == "internal_solid_infill_pattern" || m_opt_id == "sparse_infill_pattern" || m_opt_id == "support_style")
+        if (m_opt_id == "top_surface_pattern" || m_opt_id == "bottom_surface_pattern" || m_opt_id == "internal_solid_infill_pattern" || m_opt_id == "sparse_infill_pattern" || m_opt_id == "support_style" || m_opt_id == "curr_bed_type")
 		{
 			std::string key;
 			const t_config_enum_values& map_names = *m_opt.enum_keys_map;
@@ -1384,7 +1429,7 @@ boost::any& Choice::get_value()
         if (m_opt.nullable && field->GetSelection() == -1)
             m_value = ConfigOptionEnumsGenericNullable::nil_value();
         else if (m_opt_id == "top_surface_pattern" || m_opt_id == "bottom_surface_pattern" || m_opt_id == "internal_solid_infill_pattern" || m_opt_id == "sparse_infill_pattern" ||
-                 m_opt_id == "support_style") {
+                 m_opt_id == "support_style" || m_opt_id == "curr_bed_type") {
 			const std::string& key = m_opt.enum_values[field->GetSelection()];
 			m_value = int(m_opt.enum_keys_map->at(key));
 		}
@@ -1621,8 +1666,11 @@ void PointCtrl::BUILD()
 	auto temp = new wxBoxSizer(wxHORIZONTAL);
 
     const wxSize field_size(4 * m_em_unit, -1);
-
-	auto default_pt = m_opt.get_default_value<ConfigOptionPoints>()->values.at(0);
+    Slic3r::Vec2d default_pt;
+    if(m_opt.type == coPoints)
+	    default_pt = m_opt.get_default_value<ConfigOptionPoints>()->values.at(0);
+    else
+        default_pt = m_opt.get_default_value<ConfigOptionPoint>()->value;
 	double val = default_pt(0);
 	wxString X = val - int(val) == 0 ? wxString::Format(_T("%i"), int(val)) : wxNumberFormatter::ToString(val, 2, wxNumberFormatter::Style_None);
 	val = default_pt(1);
@@ -1733,14 +1781,19 @@ void PointCtrl::set_value(const Vec2d& value, bool change_event)
 void PointCtrl::set_value(const boost::any& value, bool change_event)
 {
 	Vec2d pt(Vec2d::Zero());
-	const Vec2d *ptf = boost::any_cast<Vec2d>(&value);
-	if (!ptf)
-	{
-		ConfigOptionPoints* pts = boost::any_cast<ConfigOptionPoints*>(value);
-		pt = pts->values.at(0);
-	}
-	else
-		pt = *ptf;
+    const Vec2d* ptf = boost::any_cast<Vec2d>(&value);
+    if (!ptf) {
+        if (m_opt.type == coPoint) {
+            ConfigOptionPoint* pts = boost::any_cast<ConfigOptionPoint*>(value);
+            pt = pts->value;
+        }
+        else {
+            ConfigOptionPoints* pts = boost::any_cast<ConfigOptionPoints*>(value);
+            pt = pts->values.at(0);
+        }
+    }
+    else
+        pt = *ptf;
 	set_value(pt, change_event);
 }
 

@@ -146,6 +146,25 @@ std::string GCodeWriter::set_bed_temperature(int temperature, bool wait)
     return gcode.str();
 }
 
+std::string GCodeWriter::set_chamber_temperature(int temperature, bool wait)
+{
+    std::string code, comment;
+    std::ostringstream gcode;
+
+    if (wait)
+    {
+        gcode<<"M106 P2 S255 \n";
+        gcode<<"M191 S"<<std::to_string(temperature)<<" ;"<<"set chamber_temperature and wait for it to be reached\n";
+        gcode<<"M106 P2 S0 \n";
+    }
+    else {
+        code = "M141";
+        comment = "set chamber_temperature";
+        gcode << code << " S" << temperature << ";" << comment << "\n";
+    }
+    return gcode.str();
+}
+
 std::string GCodeWriter::set_acceleration(unsigned int acceleration)
 {
     // Clamp the acceleration to the allowed maximum.
@@ -606,14 +625,22 @@ std::string GCodeWriter::retract_for_toolchange(bool before_wipe)
 std::string GCodeWriter::_retract(double length, double restart_extra, const std::string &comment)
 {
     std::string gcode;
+    if (config.use_firmware_retraction)
+        length = 1;
     if (double dE = m_extruder->retract(length, restart_extra);  dE != 0) {
-        //BBS
-        GCodeG1Formatter w;
-        w.emit_e(m_extruder->E());
-        w.emit_f(m_extruder->retract_speed() * 60.);
-        //BBS
-        w.emit_comment(GCodeWriter::full_gcode_comment, comment);
-        gcode = w.string();
+        //add firmware retraction
+        if (config.use_firmware_retraction) {
+            gcode = FLAVOR_IS(gcfMachinekit) ? "G22 ;retract" : "G10 ;retract \n";
+        }
+        else {
+            //BBS
+            GCodeG1Formatter w;
+            w.emit_e(m_extruder->E());
+            w.emit_f(m_extruder->retract_speed() * 60.);
+            //BBS
+            w.emit_comment(GCodeWriter::full_gcode_comment, comment);
+            gcode = w.string();
+        }
     }
     
     if (FLAVOR_IS(gcfMakerWare))
@@ -630,14 +657,20 @@ std::string GCodeWriter::unretract()
         gcode = "M101 ; extruder on\n";
     
     if (double dE = m_extruder->unretract(); dE != 0) {
-        //BBS
-        // use G1 instead of G0 because G0 will blend the restart with the previous travel move
-        GCodeG1Formatter w;
-        w.emit_e(m_extruder->E());
-        w.emit_f(m_extruder->deretract_speed() * 60.);
-        //BBS
-        w.emit_comment(GCodeWriter::full_gcode_comment, " ; unretract");
-        gcode += w.string();
+        if (config.use_firmware_retraction) {
+            gcode += FLAVOR_IS(gcfMachinekit) ? "G23 ;unretract \n" : "G11 ;unretract \n";
+            gcode += reset_e();
+        }
+        else {
+            //BBS
+            // use G1 instead of G0 because G0 will blend the restart with the previous travel move
+            GCodeG1Formatter w;
+            w.emit_e(m_extruder->E());
+            w.emit_f(m_extruder->deretract_speed() * 60.);
+            //BBS
+            w.emit_comment(GCodeWriter::full_gcode_comment, " ; unretract");
+            gcode += w.string();
+        }
     }
     
     return gcode;
@@ -652,7 +685,10 @@ std::string GCodeWriter::lift(LiftType lift_type, bool spiral_vase)
     double target_lift = 0;
     {
         //BBS
-        target_lift = this->config.z_hop.get_at(m_extruder->id());
+        double above = this->config.retract_lift_above.get_at(m_extruder->id());
+        double below = this->config.retract_lift_below.get_at(m_extruder->id());
+        if (m_pos.z() >= above && m_pos.z() <= below)
+            target_lift = this->config.z_hop.get_at(m_extruder->id());
     }
     // BBS
     if (m_lifted == 0 && m_to_lift == 0 && target_lift > 0) {
@@ -732,6 +768,16 @@ std::string GCodeWriter::set_additional_fan(unsigned int speed)
             gcode << " ; enable additional fan ";
     }
     gcode << "\n";
+    return gcode.str();
+}
+
+std::string GCodeWriter::set_exhaust_fan( int speed,bool add_eol)
+{
+    std::ostringstream gcode;
+    gcode << "M106" << " P3" << " S" << (int)(speed / 100.0 * 255);
+
+    if(add_eol)
+        gcode << "\n";
     return gcode.str();
 }
 

@@ -5,12 +5,8 @@
 #include "libslic3r/Print.hpp"
 
 namespace Slic3r { namespace GUI {
-std::string float_to_string(float value, int precision = 2)
-{
-    std::stringstream stream;
-    stream << std::fixed << std::setprecision(precision) << value;
-    return stream.str();
-}
+static int PA_LINE = 0;
+static int PA_PATTERN = 1;
 
 CaliPresetCaliStagePanel::CaliPresetCaliStagePanel(
     wxWindow* parent,
@@ -129,6 +125,71 @@ void CaliPresetCaliStagePanel::set_flow_ratio_value(float flow_ratio)
 {
     flow_ratio_input->GetTextCtrl()->SetValue(wxString::Format("%.2f", flow_ratio));
     m_flow_ratio_value = flow_ratio;
+}
+
+CaliComboBox::CaliComboBox(wxWindow* parent,
+    wxString                              title,
+    wxArrayString                         values,
+    int                                   default_index, // default delected id
+    std::function<void(wxCommandEvent&)>  on_value_change,
+    wxWindowID                            id,
+    const wxPoint&                        pos,
+    const wxSize&                         size,
+    long                                  style)
+    : wxPanel(parent, id, pos, size, style)
+    , m_title(title)
+    , m_on_value_change_call_back(on_value_change)
+{
+    SetBackgroundColour(*wxWHITE);
+    m_top_sizer = new wxBoxSizer(wxVERTICAL);
+    m_top_sizer->AddSpacer(PRESET_GAP);
+    auto combo_title = new Label(this, title);
+    combo_title->SetFont(Label::Head_14);
+    combo_title->Wrap(-1);
+    m_top_sizer->Add(combo_title, 0, wxALL, 0);
+    m_top_sizer->AddSpacer(FromDIP(10));
+    m_combo_box = new ComboBox(this, wxID_ANY, "", wxDefaultPosition, CALIBRATION_COMBOX_SIZE, 0, nullptr, wxCB_READONLY);
+    m_top_sizer->Add(m_combo_box, 0, wxALL, 0);
+    m_top_sizer->AddSpacer(PRESET_GAP);
+
+    this->SetSizer(m_top_sizer);
+    m_top_sizer->Fit(this);
+
+    // set values
+    for (int i = 0; i < values.size(); ++i) {
+        m_combo_box->AppendString(values[i]);
+    }
+    m_combo_box->SetSelection(default_index);
+
+    // bind call back function
+    if (m_on_value_change_call_back)
+        m_combo_box->Bind(wxEVT_COMBOBOX, m_on_value_change_call_back);
+}
+
+int CaliComboBox::get_selection() const
+{
+    if (m_combo_box)
+        return m_combo_box->GetSelection();
+
+    return 0;
+}
+
+wxString CaliComboBox::get_value() const
+{
+    if (m_combo_box)
+        return m_combo_box->GetValue();
+
+    return wxString();
+}
+
+void CaliComboBox::set_values(const wxArrayString &values)
+{
+    if (m_combo_box) {
+        for (int i = 0; i < values.size(); ++i) {
+            m_combo_box->AppendString(values[i]);
+        }
+        m_combo_box->SetSelection(0);
+    }
 }
 
 CaliPresetWarningPanel::CaliPresetWarningPanel(
@@ -384,6 +445,16 @@ CalibrationPresetPage::CalibrationPresetPage(
     m_top_sizer->Fit(this);
 }
 
+void CalibrationPresetPage::msw_rescale()
+{
+    CalibrationWizardPage::msw_rescale();
+    m_ams_sync_button->msw_rescale();
+    m_virtual_tray_comboBox->msw_rescale();
+    for (auto& comboBox : m_filament_comboBox_list) {
+        comboBox->msw_rescale();
+    }
+}
+
 void CalibrationPresetPage::create_selection_panel(wxWindow* parent)
 {
     auto panel_sizer = new wxBoxSizer(wxVERTICAL);
@@ -572,108 +643,6 @@ void CalibrationPresetPage::create_ext_spool_panel(wxWindow* parent)
         });
 }
 
-void CalibrationPresetPage::create_sending_panel(wxWindow* parent)
-{
-    parent->SetMinSize({ FromDIP(475), FromDIP(200) });
-    parent->SetMaxSize({ FromDIP(475), FromDIP(200) });
-
-    auto panel_sizer = new wxBoxSizer(wxVERTICAL);
-    parent->SetSizer(panel_sizer);
-
-    m_send_progress_bar = std::shared_ptr<BBLStatusBarSend>(new BBLStatusBarSend(parent));
-    m_send_progress_bar->set_cancel_callback_fina([this]() {
-            BOOST_LOG_TRIVIAL(info) << "CalibrationWizard::print_job: enter canceled";
-            if (CalibUtils::print_job) {
-                if (CalibUtils::print_job->is_running()) {
-                    BOOST_LOG_TRIVIAL(info) << "calibration_print_job: canceled";
-                    CalibUtils::print_job->cancel();
-                }
-                CalibUtils::print_job->join();
-            }
-            show_status(CaliPresetStatusNormal);
-        });
-    panel_sizer->Add(m_send_progress_bar->get_panel(), 0, wxEXPAND);
-
-    m_sw_print_failed_info = new wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(380), FromDIP(125)), wxVSCROLL);
-    m_sw_print_failed_info->SetBackgroundColour(*wxWHITE);
-    m_sw_print_failed_info->SetScrollRate(0, 5);
-    m_sw_print_failed_info->SetMinSize(wxSize(FromDIP(380), FromDIP(125)));
-    m_sw_print_failed_info->SetMaxSize(wxSize(FromDIP(380), FromDIP(125)));
-
-    m_sw_print_failed_info->Hide();
-
-    panel_sizer->Add(m_sw_print_failed_info, 0, wxEXPAND);
-
-    // create error info panel
-    wxBoxSizer* sizer_print_failed_info = new wxBoxSizer(wxVERTICAL);
-    m_sw_print_failed_info->SetSizer(sizer_print_failed_info);
-
-    wxBoxSizer* sizer_error_code = new wxBoxSizer(wxHORIZONTAL);
-    wxBoxSizer* sizer_error_desc = new wxBoxSizer(wxHORIZONTAL);
-    wxBoxSizer* sizer_extra_info = new wxBoxSizer(wxHORIZONTAL);
-
-    auto st_title_error_code = new Label(m_sw_print_failed_info, _L("Error code"));
-    auto st_title_error_code_doc = new Label(m_sw_print_failed_info, ": ");
-    m_st_txt_error_code = new Label(m_sw_print_failed_info, wxEmptyString);
-    st_title_error_code->SetForegroundColour(0x909090);
-    st_title_error_code_doc->SetForegroundColour(0x909090);
-    m_st_txt_error_code->SetForegroundColour(0x909090);
-    st_title_error_code->SetFont(::Label::Body_13);
-    st_title_error_code_doc->SetFont(::Label::Body_13);
-    m_st_txt_error_code->SetFont(::Label::Body_13);
-    st_title_error_code->SetMinSize(wxSize(FromDIP(74), -1));
-    st_title_error_code->SetMaxSize(wxSize(FromDIP(74), -1));
-    m_st_txt_error_code->SetMinSize(wxSize(FromDIP(260), -1));
-    m_st_txt_error_code->SetMaxSize(wxSize(FromDIP(260), -1));
-    sizer_error_code->Add(st_title_error_code, 0, wxALL, 0);
-    sizer_error_code->Add(st_title_error_code_doc, 0, wxALL, 0);
-    sizer_error_code->Add(m_st_txt_error_code, 0, wxALL, 0);
-
-    auto st_title_error_desc = new Label(m_sw_print_failed_info, _L("Error desc"));
-    auto st_title_error_desc_doc = new Label(m_sw_print_failed_info, ": ");
-    m_st_txt_error_desc = new Label(m_sw_print_failed_info, wxEmptyString);
-    st_title_error_desc->SetForegroundColour(0x909090);
-    st_title_error_desc_doc->SetForegroundColour(0x909090);
-    m_st_txt_error_desc->SetForegroundColour(0x909090);
-    st_title_error_desc->SetFont(::Label::Body_13);
-    st_title_error_desc_doc->SetFont(::Label::Body_13);
-    m_st_txt_error_desc->SetFont(::Label::Body_13);
-    st_title_error_desc->SetMinSize(wxSize(FromDIP(74), -1));
-    st_title_error_desc->SetMaxSize(wxSize(FromDIP(74), -1));
-    m_st_txt_error_desc->SetMinSize(wxSize(FromDIP(260), -1));
-    m_st_txt_error_desc->SetMaxSize(wxSize(FromDIP(260), -1));
-    sizer_error_desc->Add(st_title_error_desc, 0, wxALL, 0);
-    sizer_error_desc->Add(st_title_error_desc_doc, 0, wxALL, 0);
-    sizer_error_desc->Add(m_st_txt_error_desc, 0, wxALL, 0);
-
-    auto st_title_extra_info = new Label(m_sw_print_failed_info, _L("Extra info"));
-    auto st_title_extra_info_doc = new Label(m_sw_print_failed_info, ": ");
-    m_st_txt_extra_info = new Label(m_sw_print_failed_info, wxEmptyString);
-    st_title_extra_info->SetForegroundColour(0x909090);
-    st_title_extra_info_doc->SetForegroundColour(0x909090);
-    m_st_txt_extra_info->SetForegroundColour(0x909090);
-    st_title_extra_info->SetFont(::Label::Body_13);
-    st_title_extra_info_doc->SetFont(::Label::Body_13);
-    m_st_txt_extra_info->SetFont(::Label::Body_13);
-    st_title_extra_info->SetMinSize(wxSize(FromDIP(74), -1));
-    st_title_extra_info->SetMaxSize(wxSize(FromDIP(74), -1));
-    m_st_txt_extra_info->SetMinSize(wxSize(FromDIP(260), -1));
-    m_st_txt_extra_info->SetMaxSize(wxSize(FromDIP(260), -1));
-    sizer_extra_info->Add(st_title_extra_info, 0, wxALL, 0);
-    sizer_extra_info->Add(st_title_extra_info_doc, 0, wxALL, 0);
-    sizer_extra_info->Add(m_st_txt_extra_info, 0, wxALL, 0);
-
-    sizer_print_failed_info->Add(sizer_error_code, 0, wxLEFT, 5);
-    sizer_print_failed_info->Add(0, 0, 0, wxTOP, FromDIP(3));
-    sizer_print_failed_info->Add(sizer_error_desc, 0, wxLEFT, 5);
-    sizer_print_failed_info->Add(0, 0, 0, wxTOP, FromDIP(3));
-    sizer_print_failed_info->Add(sizer_extra_info, 0, wxLEFT, 5);
-
-    Bind(EVT_SHOW_ERROR_INFO, [this](auto& e) {
-        show_send_failed_info(true);
-    });
-}
-
 void CalibrationPresetPage::create_page(wxWindow* parent)
 {
     m_page_caption = new CaliPageCaption(parent, m_cali_mode);
@@ -711,6 +680,13 @@ void CalibrationPresetPage::create_page(wxWindow* parent)
     m_filament_list_panel = new wxPanel(parent);
     m_filament_list_panel->SetBackgroundColour(*wxWHITE);
     create_filament_list_panel(m_filament_list_panel);
+
+    if (m_cali_mode == CalibMode::Calib_PA_Line || m_cali_mode == CalibMode::Calib_PA_Pattern) {
+        wxArrayString pa_cali_modes;
+        pa_cali_modes.push_back(_L("Line"));
+        pa_cali_modes.push_back(_L("Pattern"));
+        m_pa_cali_method_combox = new CaliComboBox(parent, _L("Method"), pa_cali_modes);
+    }
     
     m_ext_spool_panel = new wxPanel(parent);
     create_ext_spool_panel(m_ext_spool_panel);
@@ -720,15 +696,13 @@ void CalibrationPresetPage::create_page(wxWindow* parent)
 
     m_tips_panel = new CaliPresetTipsPanel(parent);
 
-    m_sending_panel = new wxPanel(parent);
-    m_sending_panel->SetBackgroundColour(*wxWHITE);
-    create_sending_panel(m_sending_panel);
-
+    m_sending_panel = new CaliPageSendingPanel(parent);
+    m_sending_panel->get_sending_progress_bar()->set_cancel_callback_fina([this]() {
+        on_cali_cancel_job();
+        });
     m_sending_panel->Hide();
 
-    if (m_show_custom_range) {
-        m_custom_range_panel = new CaliPresetCustomRangePanel(parent);
-    }
+    m_custom_range_panel = new CaliPresetCustomRangePanel(parent);
 
     m_action_panel = new CaliPageActionPanel(parent, m_cali_mode, CaliPageType::CALI_PAGE_PRESET);
 
@@ -739,11 +713,10 @@ void CalibrationPresetPage::create_page(wxWindow* parent)
     m_top_sizer->Add(m_selection_panel, 0);
     m_top_sizer->Add(m_filament_list_panel, 0);
     m_top_sizer->Add(m_ext_spool_panel, 0);
+    m_top_sizer->Add(m_pa_cali_method_combox, 0);
+    m_top_sizer->Add(m_custom_range_panel, 0);
+    m_top_sizer->AddSpacer(FromDIP(15));
     m_top_sizer->Add(m_warning_panel, 0);
-    if (m_show_custom_range) {
-        m_top_sizer->Add(m_custom_range_panel, 0);
-        m_top_sizer->AddSpacer(FromDIP(15));
-    }
     m_top_sizer->Add(m_tips_panel, 0);
     m_top_sizer->AddSpacer(PRESET_GAP);
     m_top_sizer->Add(m_sending_panel, 0, wxALIGN_CENTER);
@@ -973,8 +946,10 @@ bool CalibrationPresetPage::is_filament_in_blacklist(Preset* preset, std::string
         std::string filamnt_type;
         preset->get_filament_type(filamnt_type);
 
-        if (preset->vendor) {
-            DeviceManager::check_filaments_in_blacklist(preset->vendor->name, filamnt_type, in_blacklist, action, info);
+        auto vendor = dynamic_cast<ConfigOptionStrings*> (preset->config.option("filament_vendor"));
+        if (vendor && (vendor->values.size() > 0)) {
+            std::string vendor_name = vendor->values[0];
+            DeviceManager::check_filaments_in_blacklist(vendor_name, filamnt_type, in_blacklist, action, info);
         }
 
         if (in_blacklist) {
@@ -1074,6 +1049,9 @@ void CalibrationPresetPage::update_combobox_filaments(MachineObject* obj)
 {
     if (!obj) return;
 
+    if (!obj->is_info_ready())
+        return;
+
     //step 1: update combobox filament list
     float nozzle_value = get_nozzle_value();
     obj->cali_selected_nozzle_dia = nozzle_value;
@@ -1121,12 +1099,6 @@ bool CalibrationPresetPage::is_blocking_printing()
 
 void CalibrationPresetPage::update_show_status()
 {
-    if (get_status() == CaliPresetPageStatus::CaliPresetStatusSending)
-        return;
-
-    if (get_status() == CaliPresetPageStatus::CaliPresetStatusSendingCanceled)
-        return;
-
     NetworkAgent* agent = Slic3r::GUI::wxGetApp().getAgent();
     DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager();
     if (!agent) {return;}
@@ -1239,12 +1211,8 @@ bool CalibrationPresetPage::need_check_sdcard(MachineObject* obj)
 
 void CalibrationPresetPage::show_status(CaliPresetPageStatus status)
 {
-    if (status == CaliPresetPageStatus::CaliPresetStatusSending) {
-        sending_mode();
-    }
-    else {
-        prepare_mode();
-    }
+    if (m_stop_update_page_status)
+        return;
 
     if (m_page_status != status)
         //BOOST_LOG_TRIVIAL(info) << "CalibrationPresetPage: show_status = " << status << "(" << get_print_status_info(status) << ")";
@@ -1256,7 +1224,6 @@ void CalibrationPresetPage::show_status(CaliPresetPageStatus status)
         Enable_Send_Button(false);
     }
     else if (status == CaliPresetPageStatus::CaliPresetStatusNormal) {
-        m_sending_panel->Show(false);
         update_print_status_msg(wxEmptyString, false);
         Enable_Send_Button(true);
         Layout();
@@ -1290,15 +1257,6 @@ void CalibrationPresetPage::show_status(CaliPresetPageStatus status)
         wxString msg_text = _L("The printer is busy on other print job");
         update_print_status_msg(msg_text, true);
         Enable_Send_Button(false);
-    }
-    else if (status == CaliPresetPageStatus::CaliPresetStatusSending) {
-        m_sending_panel->Show();
-        Enable_Send_Button(false);
-        Layout();
-        Fit();
-    }
-    else if (status == CaliPresetPageStatus::CaliPresetStatusSendingCanceled) {
-        Enable_Send_Button(true);
     }
     else if (status == CaliPresetPageStatus::CaliPresetStatusLanModeNoSdcard) {
         wxString msg_text = _L("An SD card needs to be inserted before printing via LAN.");
@@ -1338,19 +1296,6 @@ void CalibrationPresetPage::Enable_Send_Button(bool enable)
     m_action_panel->enable_button(CaliPageActionType::CALI_ACTION_CALI, enable);
 }
 
-void CalibrationPresetPage::prepare_mode()
-{
-    Enable_Send_Button(true);
-    m_action_panel->show_button(CaliPageActionType::CALI_ACTION_CALI, true);
-}
-
-void CalibrationPresetPage::sending_mode()
-{
-    Enable_Send_Button(false);
-    m_action_panel->show_button(CaliPageActionType::CALI_ACTION_CALI, false);
-}
-
-
 float CalibrationPresetPage::get_nozzle_value()
 {
     double nozzle_value = 0.0;
@@ -1380,44 +1325,6 @@ void CalibrationPresetPage::on_device_connected(MachineObject* obj)
     update_combobox_filaments(obj);
 }
 
-void CalibrationPresetPage::update_print_error_info(int code, const std::string& msg, const std::string& extra)
-{
-    m_print_error_code = code;
-    m_print_error_msg = msg;
-    m_print_error_extra = extra;
-}
-
-void CalibrationPresetPage::show_send_failed_info(bool show, int code, wxString description, wxString extra) 
-{
-    if (show) {
-        if (!m_sw_print_failed_info->IsShown()) {
-            m_sw_print_failed_info->Show(true);
-
-            m_st_txt_error_code->SetLabelText(wxString::Format("%d", m_print_error_code));
-            m_st_txt_error_desc->SetLabelText(wxGetApp().filter_string(m_print_error_msg));
-            m_st_txt_extra_info->SetLabelText(wxGetApp().filter_string(m_print_error_extra));
-
-            m_st_txt_error_code->Wrap(FromDIP(260));
-            m_st_txt_error_desc->Wrap(FromDIP(260));
-            m_st_txt_extra_info->Wrap(FromDIP(260));
-        }
-        else {
-            m_sw_print_failed_info->Show(false);
-        }
-        Layout();
-        Fit();
-    }
-    else {
-        if (!m_sw_print_failed_info->IsShown()) { return; }
-        m_sw_print_failed_info->Show(false);
-        m_st_txt_error_code->SetLabelText(wxEmptyString);
-        m_st_txt_error_desc->SetLabelText(wxEmptyString);
-        m_st_txt_extra_info->SetLabelText(wxEmptyString);
-        Layout();
-        Fit();
-    }
-}
-
 void CalibrationPresetPage::set_cali_filament_mode(CalibrationFilamentMode mode)
 {
     CalibrationWizardPage::set_cali_filament_mode(mode);
@@ -1437,16 +1344,59 @@ void CalibrationPresetPage::set_cali_filament_mode(CalibrationFilamentMode mode)
 void CalibrationPresetPage::set_cali_method(CalibrationMethod method)
 {
     CalibrationWizardPage::set_cali_method(method);
-    if (method == CalibrationMethod::CALI_METHOD_MANUAL && m_cali_mode == CalibMode::Calib_Flow_Rate) {
-        wxArrayString steps;
-        steps.Add(_L("Preset"));
-        steps.Add(_L("Calibration1"));
-        steps.Add(_L("Calibration2"));
-        steps.Add(_L("Record Factor"));
-        m_step_panel->set_steps_string(steps);
-        m_step_panel->set_steps(0);
-        if (m_cali_stage_panel)
-            m_cali_stage_panel->Show();
+    if (method == CalibrationMethod::CALI_METHOD_MANUAL) {
+        if (m_cali_mode == CalibMode::Calib_Flow_Rate) {
+            wxArrayString steps;
+            steps.Add(_L("Preset"));
+            steps.Add(_L("Calibration1"));
+            steps.Add(_L("Calibration2"));
+            steps.Add(_L("Record Factor"));
+            m_step_panel->set_steps_string(steps);
+            m_step_panel->set_steps(0);
+            if (m_cali_stage_panel)
+                m_cali_stage_panel->Show();
+
+            if (m_pa_cali_method_combox)
+                m_pa_cali_method_combox->Show(false);
+
+            if (m_custom_range_panel)
+                m_custom_range_panel->Show(false);
+        }
+        else if (m_cali_mode == CalibMode::Calib_PA_Line || m_cali_mode == CalibMode::Calib_PA_Pattern) {
+            if (m_cali_stage_panel)
+                m_cali_stage_panel->Show(false);
+
+            if (m_pa_cali_method_combox)
+                m_pa_cali_method_combox->Show();
+
+            if (m_custom_range_panel) {
+                wxArrayString titles;
+                titles.push_back(_L("From k Value"));
+                titles.push_back(_L("To k Value"));
+                titles.push_back(_L("Value step"));
+                m_custom_range_panel->set_titles(titles);
+
+                wxArrayString values;
+                ExtruderType extruder_type  = ExtruderType::etDirectDrive;
+                Preset* printer_preset = get_printer_preset(curr_obj, get_nozzle_value());
+                if (printer_preset) {
+                    extruder_type = ExtruderType(printer_preset->config.opt_enum("extruder_type", 0));
+                }
+                if (extruder_type == ExtruderType::etBowden) {
+                    values.push_back(wxString::Format(wxT("%.0f"), 0));
+                    values.push_back(wxString::Format(wxT("%.1f"), 0.5));
+                    values.push_back(wxString::Format(wxT("%.2f"), 0.05));
+                } else {
+                    values.push_back(wxString::Format(wxT("%.0f"), 0));
+                    values.push_back(wxString::Format(wxT("%.2f"), 0.05));
+                    values.push_back(wxString::Format(wxT("%.3f"), 0.005));
+                }
+                m_custom_range_panel->set_values(values);
+
+                m_custom_range_panel->set_unit(_L(""));
+                m_custom_range_panel->Show();
+            }
+        }
     }
     else {
         wxArrayString steps;
@@ -1457,19 +1407,58 @@ void CalibrationPresetPage::set_cali_method(CalibrationMethod method)
         m_step_panel->set_steps(0);
         if (m_cali_stage_panel)
             m_cali_stage_panel->Show(false);
+        if (m_custom_range_panel)
+            m_custom_range_panel->Show(false);
+        if (m_pa_cali_method_combox)
+            m_pa_cali_method_combox->Show(false);
     }
 }
 
 void CalibrationPresetPage::on_cali_start_job()
 {
-    m_send_progress_bar->reset();
-    m_sw_print_failed_info->Show(false);
-    show_status(CaliPresetPageStatus::CaliPresetStatusSending);
+    m_sending_panel->reset();
+    m_sending_panel->Show();
+    Enable_Send_Button(false);
+    m_action_panel->show_button(CaliPageActionType::CALI_ACTION_CALI, false);
+    Layout();
+    Fit();
+
+    m_stop_update_page_status = true;
 }
 
 void CalibrationPresetPage::on_cali_finished_job()
 {
-    show_status(CaliPresetPageStatus::CaliPresetStatusNormal);
+    m_sending_panel->reset();
+    m_sending_panel->Show(false);
+    update_print_status_msg(wxEmptyString, false);
+    Enable_Send_Button(true);
+    m_action_panel->show_button(CaliPageActionType::CALI_ACTION_CALI, true);
+    Layout();
+    Fit();
+
+    m_stop_update_page_status = false;
+}
+
+void CalibrationPresetPage::on_cali_cancel_job()
+{
+    BOOST_LOG_TRIVIAL(info) << "CalibrationWizard::print_job: enter canceled";
+    if (CalibUtils::print_job) {
+        if (CalibUtils::print_job->is_running()) {
+            BOOST_LOG_TRIVIAL(info) << "calibration_print_job: canceled";
+            CalibUtils::print_job->cancel();
+        }
+        CalibUtils::print_job->join();
+    }
+
+    m_sending_panel->reset();
+    m_sending_panel->Show(false);
+    update_print_status_msg(wxEmptyString, false);
+    Enable_Send_Button(true);
+    m_action_panel->show_button(CaliPageActionType::CALI_ACTION_CALI, true);
+    Layout();
+    Fit();
+
+    m_stop_update_page_status = false;
 }
 
 void CalibrationPresetPage::init_with_machine(MachineObject* obj)
@@ -1854,10 +1843,24 @@ std::string CalibrationPresetPage::get_print_preset_name()
 
 wxArrayString CalibrationPresetPage::get_custom_range_values()
 {
-    if (m_show_custom_range && m_custom_range_panel) {
+    if (m_custom_range_panel) {
         return m_custom_range_panel->get_values();
     }
     return wxArrayString();
+}
+
+CalibMode CalibrationPresetPage::get_pa_cali_method()
+{
+    if (m_pa_cali_method_combox) {
+        int selected_mode = m_pa_cali_method_combox->get_selection();
+        if (selected_mode == PA_LINE) {
+            return CalibMode::Calib_PA_Line;
+        }
+        else if (selected_mode == PA_PATTERN) {
+            return CalibMode::Calib_PA_Pattern;
+        }
+    }
+    return CalibMode::Calib_PA_Line;
 }
 
 MaxVolumetricSpeedPresetPage::MaxVolumetricSpeedPresetPage(

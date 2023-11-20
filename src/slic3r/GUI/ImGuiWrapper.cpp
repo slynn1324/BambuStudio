@@ -54,8 +54,8 @@ static const std::map<const wchar_t, std::string> font_icons = {
     {ImGui::MinimalizeHoverButton , "notification_minimalize_hover" },
     {ImGui::RightArrowButton      , "notification_right"            },
     {ImGui::RightArrowHoverButton , "notification_right_hover"      },
-    {ImGui::PreferencesButton      , "notification_preferences"      },
-    {ImGui::PreferencesHoverButton , "notification_preferences_hover"},
+    //{ImGui::PreferencesButton      , "notification_preferences"      },
+    //{ImGui::PreferencesHoverButton , "notification_preferences_hover"},
 #if ENABLE_ENHANCED_IMGUI_SLIDER_FLOAT
     {ImGui::SliderFloatEditBtnIcon, "edit_button"                    },
 #endif // ENABLE_ENHANCED_IMGUI_SLIDER_FLOAT
@@ -63,6 +63,7 @@ static const std::map<const wchar_t, std::string> font_icons = {
     {ImGui::TriangleButtonIcon     , "triangle_paint"                },
     {ImGui::FillButtonIcon         , "fill_paint"                    },
     {ImGui::HeightRangeIcon        , "height_range"                  },
+    {ImGui::ConfirmIcon            , "confirm"                       },
     {ImGui::GapFillIcon            , "gap_fill"                      },
     {ImGui::FoldButtonIcon         , "im_fold"                       },
     {ImGui::UnfoldButtonIcon       , "im_unfold"                     },
@@ -72,13 +73,14 @@ static const std::map<const wchar_t, std::string> font_icons = {
     {ImGui::MinimalizeHoverDarkButton  , "notification_minimalize_hover_dark" },
     {ImGui::RightArrowDarkButton       , "notification_right_dark"            },
     {ImGui::RightArrowHoverDarkButton  , "notification_right_hover_dark"      },
-    {ImGui::PreferencesDarkButton      , "notification_preferences_dark"      },
-    {ImGui::PreferencesHoverDarkButton , "notification_preferences_hover_dark"},
+    //{ImGui::PreferencesDarkButton      , "notification_preferences_dark"      },
+    //{ImGui::PreferencesHoverDarkButton , "notification_preferences_hover_dark"},
 
     {ImGui::CircleButtonDarkIcon       , "circle_paint_dark"                  },
     {ImGui::TriangleButtonDarkIcon     , "triangle_paint_dark"                },
     {ImGui::FillButtonDarkIcon         , "fill_paint_dark"                    },
     {ImGui::HeightRangeDarkIcon        , "height_range_dark"                  },
+    {ImGui::ConfirmDarkIcon            , "confirm_dark"                       },
     {ImGui::GapFillDarkIcon            , "gap_fill_dark"                      },
     {ImGui::SphereButtonDarkIcon       , "toolbar_modifier_sphere_dark"       },
 
@@ -91,6 +93,10 @@ static const std::map<const wchar_t, std::string> font_icons = {
 
     {ImGui::CloseBlockNotifButton      , "block_notification_close"           },
     {ImGui::CloseBlockNotifHoverButton , "block_notification_close_hover"     },
+
+    {ImGui::CollapseArrowIcon,            "notification_collapse"             },
+    {ImGui::ExpandArrowIcon,              "notification_expand"               },
+    {ImGui::OpenArrowIcon,                "notification_arrow_open"           },
 };
 static const std::map<const wchar_t, std::string> font_icons_large = {
     {ImGui::CloseNotifButton        , "notification_close"              },
@@ -108,15 +114,18 @@ static const std::map<const wchar_t, std::string> font_icons_large = {
 //    {ImGui::CustomSeamMarker        , "seam"                            },
 //    {ImGui::MmuSegmentationMarker   , "mmu_segmentation"                },
 //    {ImGui::VarLayerHeightMarker    , "layers"                          },
-    {ImGui::DocumentationButton     , "notification_documentation"      },
-    {ImGui::DocumentationHoverButton, "notification_documentation_hover"},
+    //{ImGui::DocumentationButton     , "notification_documentation"      },
+    //{ImGui::DocumentationHoverButton, "notification_documentation_hover"},
     //{ImGui::InfoMarker              , "notification_info"               },
     // dark mode icon
     {ImGui::CloseNotifDarkButton        , "notification_close_dark"              },
     {ImGui::CloseNotifHoverDarkButton   , "notification_close_hover_dark"        },
-    {ImGui::DocumentationDarkButton     , "notification_documentation_dark"      },
-    {ImGui::DocumentationHoverDarkButton, "notification_documentation_hover_dark"},
+    //{ImGui::DocumentationDarkButton     , "notification_documentation_dark"      },
+    //{ImGui::DocumentationHoverDarkButton, "notification_documentation_hover_dark"},
     {ImGui::BlockNotifErrorIcon,          "block_notification_error"             },
+    {ImGui::PrevArrowBtnIcon,             "notification_arrow_left"              },
+    {ImGui::NextArrowBtnIcon,             "notification_arrow_right"             },
+    {ImGui::CompleteIcon,                 "notification_slicing_complete"        },
 };
 
 static const std::map<const wchar_t, std::string> font_icons_extra_large = {
@@ -371,6 +380,7 @@ void ImGuiWrapper::set_language(const std::string &language)
     } else if (lang == "ko") {
         ranges = ImGui::GetIO().Fonts->GetGlyphRangesKorean(); // Default + Korean characters
         m_font_cjk = true;
+        m_is_korean = true;
     } else if (lang == "zh") {
         ranges = (language == "zh_TW") ?
             // Traditional Chinese
@@ -2090,7 +2100,10 @@ void ImGuiWrapper::init_font(bool compress)
     cfg.OversampleH = cfg.OversampleV = 1;
     //FIXME replace with io.Fonts->AddFontFromMemoryTTF(buf_decompressed_data, (int)buf_decompressed_size, m_font_size, nullptr, ranges.Data);
     //https://github.com/ocornut/imgui/issues/220
-    default_font = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/" + "HarmonyOS_Sans_SC_Regular.ttf").c_str(), m_font_size, &cfg, m_font_cjk ? ImGui::GetIO().Fonts->GetGlyphRangesChineseFull() : ranges.Data);
+    if (m_is_korean)
+        default_font = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/" + "NotoSansKR-Regular.ttf").c_str(), m_font_size, &cfg, ranges.Data);
+    else
+        default_font = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/" + "HarmonyOS_Sans_SC_Regular.ttf").c_str(), m_font_size, &cfg, ranges.Data);
     if (default_font == nullptr) {
         default_font = io.Fonts->AddFontDefault();
         if (default_font == nullptr) {
@@ -2098,7 +2111,10 @@ void ImGuiWrapper::init_font(bool compress)
         }
     }
 
-    bold_font        = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/" + "HarmonyOS_Sans_SC_Bold.ttf").c_str(), m_font_size, &cfg, ranges.Data);
+    if (m_is_korean)
+        bold_font = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/" + "NotoSansKR-Bold.ttf").c_str(), m_font_size, &cfg, ranges.Data);
+    else
+        bold_font = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/" + "HarmonyOS_Sans_SC_Bold.ttf").c_str(), m_font_size, &cfg, ranges.Data);
     if (bold_font == nullptr) {
         bold_font = io.Fonts->AddFontDefault();
         if (bold_font == nullptr) { throw Slic3r::RuntimeError("ImGui: Could not load deafult font"); }

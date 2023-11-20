@@ -74,9 +74,10 @@ std::map<std::string, std::vector<SimpleSettingData>>  SettingsFactory::OBJECT_C
 {
     { L("Quality"), {{"layer_height", "",1},
                     //{"initial_layer_print_height", "",2},
-                    {"seam_position", "",2}, {"seam_gap", "",3}, {"wipe_speed", "",4},
-                    {"slice_closing_radius", "",5}, {"resolution", "",6},
-                    {"xy_hole_compensation", "",7}, {"xy_contour_compensation", "",8}, {"elefant_foot_compensation", "",9}
+                    {"wall_sequence","",2},
+                    {"seam_position", "",3}, {"seam_gap", "",4}, {"wipe_speed", "",5},
+                    {"slice_closing_radius", "",6}, {"resolution", "",7},
+                    {"xy_hole_compensation", "",8}, {"xy_contour_compensation", "",9}, {"elefant_foot_compensation", "",10}
                     }},
     { L("Support"), {{"brim_type", "",1},{"brim_width", "",2},{"brim_object_gap", "",3},
                     {"enable_support", "",4},{"support_type", "",5},{"support_threshold_angle", "",6},{"support_on_build_plate_only", "",7},
@@ -91,8 +92,7 @@ std::map<std::string, std::vector<SimpleSettingData>>  SettingsFactory::OBJECT_C
 };
 
 std::map<std::string, std::vector<SimpleSettingData>>  SettingsFactory::PART_CATEGORY_SETTINGS=
-{
-    { L("Quality"), {{"ironing_type", "",8},{"ironing_flow", "",9},{"ironing_spacing", "",10},{"bridge_flow", "",11}
+    {{L("Quality"), {{"ironing_type", "", 8}, {"ironing_flow", "", 9}, {"ironing_spacing", "", 10}, {"ironing_speed", "", 11}, {"ironing_direction", "",12}
                     }},
     { L("Strength"), {{"wall_loops", "",1},{"top_shell_layers", "",1},{"top_shell_thickness", "",1},
                     {"bottom_shell_layers", "",1}, {"bottom_shell_thickness", "",1}, {"sparse_infill_density", "",1},
@@ -484,7 +484,7 @@ wxMenu* MenuFactory::append_submenu_add_generic(wxMenu* menu, ModelVolumeType ty
         sub_menu->AppendSeparator();
     }
 
-    for (auto &item : {L("Cube"), L("Cylinder"), L("Sphere"), L("Cone")})
+    for (auto &item : {L("Cube"), L("Cylinder"), L("Sphere"), L("Cone"), L("Disc"),L("Torus")})
     {
         append_menu_item(sub_menu, wxID_ANY, _(item), "",
             [type, item](wxCommandEvent&) { obj_list()->load_generic_subobject(item, type); }, "", menu);
@@ -687,7 +687,7 @@ wxMenuItem* MenuFactory::append_menu_item_fix_through_netfabb(wxMenu* menu)
 
 void MenuFactory::append_menu_item_export_stl(wxMenu* menu, bool is_mulity_menu)
 {
-    append_menu_item(menu, wxID_ANY, _L("Export as STL") + dots, "",
+    append_menu_item(menu, wxID_ANY, _L("Export as one STL") + dots, "",
         [](wxCommandEvent&) { plater()->export_stl(false, true); }, "", nullptr,
         [is_mulity_menu]() {
             const Selection& selection = plater()->canvas3D()->get_selection();
@@ -695,6 +695,14 @@ void MenuFactory::append_menu_item_export_stl(wxMenu* menu, bool is_mulity_menu)
                 return selection.is_multiple_full_instance() || selection.is_multiple_full_object();
             else
                 return selection.is_single_full_instance() || selection.is_single_full_object();
+        }, m_parent);
+    if (!is_mulity_menu)
+        return;
+    append_menu_item(menu, wxID_ANY, _L("Export as STLs") + dots, "",
+        [](wxCommandEvent&) { plater()->export_stl(false, true, true); }, "", nullptr,
+        []() {
+            const Selection& selection = plater()->canvas3D()->get_selection();
+            return selection.is_multiple_full_instance() || selection.is_multiple_full_object();
         }, m_parent);
 }
 
@@ -1452,7 +1460,12 @@ wxMenu* MenuFactory::assemble_part_menu()
 
 void MenuFactory::append_menu_item_clone(wxMenu* menu)
 {
-    append_menu_item(menu, wxID_ANY, _L("Clone") , "",
+#ifdef __APPLE__
+    static const wxString ctrl = ("Ctrl+");
+#else
+    static const wxString ctrl = _L("Ctrl+");
+#endif
+    append_menu_item(menu, wxID_ANY, _L("Clone") + "\t" + ctrl + "K", "",
         [this](wxCommandEvent&) {
             plater()->clone_selection();
         }, "", nullptr,

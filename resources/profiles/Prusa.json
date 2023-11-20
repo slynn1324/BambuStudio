@@ -1,6 +1,6 @@
 {
     "name": "Prusa",
-    "version": "01.07.00.01",
+    "version": "01.08.00.02",
     "force_update": "0",
     "description": "Prusa configurations",
     "machine_model_list": [
@@ -40,7 +40,6 @@
             "name": "fdm_filament_asa",
             "sub_path": "filament/fdm_filament_asa.json"
         },
-       
         {
             "name": "fdm_filament_pa",
             "sub_path": "filament/fdm_filament_pa.json"

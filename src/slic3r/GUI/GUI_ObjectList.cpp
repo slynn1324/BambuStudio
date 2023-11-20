@@ -263,6 +263,7 @@ ObjectList::ObjectList(wxWindow* parent) :
     Bind(wxEVT_DATAVIEW_ITEM_DROP_POSSIBLE, &ObjectList::OnDropPossible,    this);
     Bind(wxEVT_DATAVIEW_ITEM_DROP,          &ObjectList::OnDrop,            this);
 
+    Bind(wxEVT_DATAVIEW_ITEM_START_EDITING, &ObjectList::OnStartEditing, this);
     Bind(wxEVT_DATAVIEW_ITEM_EDITING_STARTED, &ObjectList::OnEditingStarted,  this);
     Bind(wxEVT_DATAVIEW_ITEM_EDITING_DONE,    &ObjectList::OnEditingDone,     this);
 
@@ -366,7 +367,8 @@ void ObjectList::create_objects_ctrl()
     // And Icon can be consisting of several bitmaps
     BitmapTextRenderer* bmp_text_renderer = new BitmapTextRenderer();
     bmp_text_renderer->set_can_create_editor_ctrl_function([this]() {
-        return m_objects_model->GetItemType(GetSelection()) & (itVolume | itObject);
+        auto type = m_objects_model->GetItemType(GetSelection());
+        return type & (itVolume | itObject | itPlate);
     });
 
     // BBS
@@ -777,6 +779,60 @@ void ObjectList::printable_state_changed(const std::vector<ObjectVolumeID>& ov_i
     wxGetApp().plater()->update();
 }
 
+void ObjectList::search_object_list() {
+
+    auto found_list = m_objects_model->get_search_list();
+    auto found_size = found_list.size();
+
+    if (cur_pos >= found_size) {
+        cur_pos = 0;
+    }
+
+    if (cur_pos < found_size) {
+        wxDataViewItem cur_item = found_list.Item(cur_pos);
+        select_item(cur_item);
+        cur_pos++;
+        ensure_current_item_visible();
+        selection_changed();
+    }
+}
+
+void ObjectList::set_found_list(wxString current_search_text) {
+
+    PartPlateList& ppl = wxGetApp().plater()->get_partplate_list();
+    current_search_text = current_search_text.MakeLower();
+
+    m_objects_model->append_found_list(current_search_text);
+
+    if (current_search_text.empty()) {
+        if (ppl.get_plate_count() > 0) {
+            wxDataViewItem item = m_objects_model->GetItemByPlateId(0);
+            select_item(item);
+            ensure_current_item_visible();
+            selection_changed();
+        }
+        auto column = GetColumn(colName);
+        column->SetTitle(_L("Name"));
+    }
+    else {
+        auto found_list = m_objects_model->get_search_list();
+        auto column = GetColumn(colName);
+        wxString match_num = wxString::Format("%d", found_list.size());
+        wxString match_message = " (" + match_num + _L(" search results") + ")";
+        wxString column_name = _L("Name") + match_message;
+        column->SetTitle(column_name);
+    }
+}
+
+void ObjectList::set_cur_pos(int value) {
+    cur_pos = value;
+}
+
+void ObjectList::searchbar_kill_focus() {
+    auto column = GetColumn(colName);
+    column->SetTitle(_L("Name"));
+}
+
 void ObjectList::update_objects_list_filament_column(size_t filaments_count)
 {
     assert(filaments_count >= 1);
@@ -897,6 +953,20 @@ void ObjectList::update_filament_in_config(const wxDataViewItem& item)
 
 void ObjectList::update_name_in_model(const wxDataViewItem& item) const
 {
+    if (m_objects_model->GetItemType(item) & itPlate) {
+        std::string name = m_objects_model->GetName(item).ToUTF8().data();
+        int plate_idx = -1;
+        const ItemType type0 = m_objects_model->GetItemType(item, plate_idx);
+        if (plate_idx >= 0) {
+            auto plate = wxGetApp().plater()->get_partplate_list().get_plate(plate_idx);
+            if (plate->get_plate_name() != name) {
+                plate->set_plate_name(name);
+            }
+            m_objects_model->SetCurSelectedPlateFullName(plate_idx, name);
+        }
+        return;
+    }
+
     const int obj_idx = m_objects_model->GetObjectIdByItem(item);
     if (obj_idx < 0) return;
     const int volume_id = m_objects_model->GetVolumeIdByItem(item);
@@ -1233,7 +1303,9 @@ void ObjectList::list_manipulation(const wxPoint& mouse_pos, bool evt_context_me
 
             get_selected_item_indexes(obj_idx, vol_idx, item);
             //wxGetApp().plater()->PopupObjectTable(obj_idx, vol_idx, mouse_pos);
-            if (m_objects_model->GetItemType(item) & itLayer)
+            if (m_objects_model->GetItemType(item) & itPlate)
+                dynamic_cast<TabPrintPlate*>(wxGetApp().get_plate_tab())->reset_model_config();
+            else if (m_objects_model->GetItemType(item) & itLayer)
                 dynamic_cast<TabPrintLayer*>(wxGetApp().get_layer_tab())->reset_model_config();
             else
                 dynamic_cast<TabPrintModel*>(wxGetApp().get_model_tab(vol_idx >= 0))->reset_model_config();
@@ -1466,33 +1538,44 @@ void ObjectList::key_event(wxKeyEvent& event)
 
 void ObjectList::OnBeginDrag(wxDataViewEvent &event)
 {
-    int curr_obj_id = m_objects_model->GetIdByItem(event.GetItem());
-    PartPlateList& partplate_list = wxGetApp().plater()->get_partplate_list();
-    int from_plate = partplate_list.find_instance(curr_obj_id, 0);
-    if (from_plate == -1) {
-        event.Veto();
-        return;
-    }
-    auto curr_plate_seq = partplate_list.get_plate(from_plate)->get_print_seq();
-    if (curr_plate_seq == PrintSequence::ByDefault) {
-        auto curr_preset_config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
-        if (curr_preset_config.has("print_sequence"))
-            curr_plate_seq = curr_preset_config.option<ConfigOptionEnum<PrintSequence>>("print_sequence")->value;
-    }
-
-    if (curr_plate_seq != PrintSequence::ByObject) {
-        //drag forbidden under bylayer mode
-        event.Veto();
-        return;
-    }
-    const wxDataViewItem item(event.GetItem());
-
     const bool mult_sel = multiple_selection();
-    const ItemType& type = m_objects_model->GetItemType(item);
-    if (mult_sel || (type != itObject)) {
-        //drag only allowed for single object
+    if (mult_sel) {
         event.Veto();
         return;
+    }
+
+    const wxDataViewItem item(event.GetItem());
+    const ItemType& type = m_objects_model->GetItemType(item);
+    if (!(type & (itVolume | itObject))) {
+        event.Veto();
+        return;
+    }
+
+    if (type & itObject) {
+        int curr_obj_id = m_objects_model->GetIdByItem(event.GetItem());
+        PartPlateList& partplate_list = wxGetApp().plater()->get_partplate_list();
+        int from_plate = partplate_list.find_instance(curr_obj_id, 0);
+        if (from_plate == -1) {
+            event.Veto();
+            return;
+        }
+        auto curr_plate_seq = partplate_list.get_plate(from_plate)->get_print_seq();
+        if (curr_plate_seq == PrintSequence::ByDefault) {
+            auto curr_preset_config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+            if (curr_preset_config.has("print_sequence"))
+                curr_plate_seq = curr_preset_config.option<ConfigOptionEnum<PrintSequence>>("print_sequence")->value;
+        }
+
+        if (curr_plate_seq != PrintSequence::ByObject) {
+            //drag forbidden under bylayer mode
+            event.Veto();
+            return;
+        }
+
+        m_dragged_data.init(m_objects_model->GetIdByItem(item), type);
+    }
+    else if (type & itVolume){
+        m_dragged_data.init(m_objects_model->GetObjectIdByItem(item), m_objects_model->GetVolumeIdByItem(item), type);
     }
 #if 0
     if ((mult_sel && !selected_instances_of_same_object()) ||
@@ -1522,9 +1605,8 @@ void ObjectList::OnBeginDrag(wxDataViewEvent &event)
                             type&itVolume ? m_objects_model->GetVolumeIdByItem(item) :
                                         m_objects_model->GetInstanceIdByItem(item),
                             type);
-#else
-    m_dragged_data.init(m_objects_model->GetIdByItem(item), type);
 #endif
+
     /* Under MSW or OSX, DnD moves an item to the place of another selected item
     * But under GTK, DnD moves an item between another two items.
     * And as a result - call EVT_CHANGE_SELECTION to unselect all items.
@@ -1544,37 +1626,33 @@ void ObjectList::OnBeginDrag(wxDataViewEvent &event)
 
 bool ObjectList::can_drop(const wxDataViewItem& item, int& src_obj_id, int& src_plate, int& dest_obj_id, int& dest_plate) const
 {
-#if 1
-    if (!item.IsOk() || (m_objects_model->GetItemType(item) != m_dragged_data.type()))
+    if (!item.IsOk()
+        || (m_objects_model->GetItemType(item) != m_dragged_data.type())
+        || !(m_dragged_data.type() & (itVolume|itObject)))
         return false;
 
-    int from_obj_id = m_dragged_data.obj_idx();
-    int to_obj_id   = m_objects_model->GetIdByItem(item);
-    PartPlateList& partplate_list = wxGetApp().plater()->get_partplate_list();
+    if (m_dragged_data.type() & itObject){
+        int from_obj_id = m_dragged_data.obj_idx();
+        int to_obj_id   = m_objects_model->GetIdByItem(item);
+        PartPlateList& partplate_list = wxGetApp().plater()->get_partplate_list();
 
-    int from_plate = partplate_list.find_instance(from_obj_id, 0);
-    if (from_plate == -1)
-        return false;
-    int to_plate = partplate_list.find_instance(to_obj_id, 0);
-    if ((to_plate == -1) || (from_plate != to_plate))
-        return false;
+        int from_plate = partplate_list.find_instance(from_obj_id, 0);
+        if (from_plate == -1)
+            return false;
+        int to_plate = partplate_list.find_instance(to_obj_id, 0);
+        if ((to_plate == -1) || (from_plate != to_plate))
+            return false;
 
-    src_obj_id = from_obj_id;
-    dest_obj_id = to_obj_id;
-    src_plate = from_plate;
-    dest_plate = to_plate;
-#else
-    // move instance(s) or object on "empty place" of ObjectList
-    if ( (m_dragged_data.type() & (itInstance | itObject)) && !item.IsOk() )
-        return true;
+        src_obj_id = from_obj_id;
+        dest_obj_id = to_obj_id;
+        src_plate = from_plate;
+        dest_plate = to_plate;
 
-    // type of moved item should be the same as a "destination" item
-    if (!item.IsOk() || !(m_dragged_data.type() & (itVolume|itObject)) ||
-        m_objects_model->GetItemType(item) != m_dragged_data.type() )
-        return false;
-
-    // move volumes inside one object only
-    if (m_dragged_data.type() & itVolume) {
+        // move instance(s) or object on "empty place" of ObjectList
+        // if ( (m_dragged_data.type() & (itInstance | itObject)) && !item.IsOk() )
+        //    return true;
+    }
+    else if (m_dragged_data.type() & itVolume) {  // move volumes inside one object only
         if (m_dragged_data.obj_idx() != m_objects_model->GetObjectIdByItem(item))
             return false;
         wxDataViewItem dragged_item = m_objects_model->GetItemByVolumeId(m_dragged_data.obj_idx(), m_dragged_data.sub_obj_idx());
@@ -1609,10 +1687,8 @@ bool ObjectList::can_drop(const wxDataViewItem& item, int& src_obj_id, int& src_
                 return false;
             return m_objects_model->GetVolumeIdByItem(item) != 0;
         }
-
         return false;
     }
-#endif
     return true;
 }
 
@@ -1639,78 +1715,52 @@ void ObjectList::OnDrop(wxDataViewEvent &event)
         return;
     }
 
-#if 1
+//#if 1
     take_snapshot("Object order changed");
 
-    int delta = dest_obj_id < src_obj_id ? -1 : 1;
-    PartPlateList& partplate_list = wxGetApp().plater()->get_partplate_list();
-    /*int cnt = 0, cur_id = src_obj_id, next_id, total = abs(src_obj_id - dest_obj_id);
-    //for (cur_id = src_obj_id; cnt < total; id += delta, cnt++)
-    next_id = src_obj_id + delta;
-    while (cnt < total)
-    {
-        int cur_plate = partplate_list.find_instance(next_id, 0);
-        if (cur_plate != src_plate) {
+    if(m_dragged_data.type() & itObject){
+        int delta = dest_obj_id < src_obj_id ? -1 : 1;
+        PartPlateList& partplate_list = wxGetApp().plater()->get_partplate_list();
+        /*int cnt = 0, cur_id = src_obj_id, next_id, total = abs(src_obj_id - dest_obj_id);
+        //for (cur_id = src_obj_id; cnt < total; id += delta, cnt++)
+        next_id = src_obj_id + delta;
+        while (cnt < total)
+        {
+            int cur_plate = partplate_list.find_instance(next_id, 0);
+            if (cur_plate != src_plate) {
+                cnt ++;
+                next_id += delta;
+                continue;
+            }
+            std::swap((*m_objects)[cur_id], (*m_objects)[next_id]);
+            cur_id = next_id;
             cnt ++;
             next_id += delta;
-            continue;
-        }
-        std::swap((*m_objects)[cur_id], (*m_objects)[next_id]);
-        cur_id = next_id;
-        cnt ++;
-        next_id += delta;
-    }*/
-
-    int cnt = 0;
-    for (int id = src_obj_id; cnt < abs(src_obj_id - dest_obj_id); id += delta, cnt++)
-        std::swap((*m_objects)[id], (*m_objects)[id + delta]);
-
-    select_item(m_objects_model->ReorganizeObjects(src_obj_id, dest_obj_id));
-
-    partplate_list.reload_all_objects(false, src_plate);
-    changed_object(src_obj_id);
-#else
-    if (m_dragged_data.type() == itInstance)
-    {
-        // BBS: remove snapshot name "Instances to Separated Objects"
-        Plater::TakeSnapshot snapshot(wxGetApp().plater(),"");
-        instances_to_separated_object(m_dragged_data.obj_idx(), m_dragged_data.inst_idxs());
-        m_dragged_data.clear();
-        return;
-    }
-
-    take_snapshot((m_dragged_data.type() == itVolume) ? "Object parts order changed" : "Object order changed");
-
-    if (m_dragged_data.type() & itVolume)
-    {
-        int from_volume_id = m_dragged_data.sub_obj_idx();
-        int to_volume_id   = m_objects_model->GetVolumeIdByItem(item);
-        int delta = to_volume_id < from_volume_id ? -1 : 1;
-
-        auto& volumes = (*m_objects)[m_dragged_data.obj_idx()]->volumes;
+        }*/
 
         int cnt = 0;
-        for (int id = from_volume_id; cnt < abs(from_volume_id - to_volume_id); id += delta, cnt++)
-            std::swap(volumes[id], volumes[id + delta]);
+        for (int id = src_obj_id; cnt < abs(src_obj_id - dest_obj_id); id += delta, cnt++)
+            std::swap((*m_objects)[id], (*m_objects)[id + delta]);
+
+        select_item(m_objects_model->ReorganizeObjects(src_obj_id, dest_obj_id));
+
+        partplate_list.reload_all_objects(false, src_plate);
+        changed_object(src_obj_id);
+    }
+    else if (m_dragged_data.type() & itVolume) {
+        int from_volume_id = m_dragged_data.sub_obj_idx();
+        int to_volume_id   = m_objects_model->GetVolumeIdByItem(item);
+        int delta          = to_volume_id < from_volume_id ? -1 : 1;
+
+        auto &volumes = (*m_objects)[m_dragged_data.obj_idx()]->volumes;
+
+        int cnt = 0;
+        for (int id = from_volume_id; cnt < abs(from_volume_id - to_volume_id); id += delta, cnt++) std::swap(volumes[id], volumes[id + delta]);
 
         select_item(m_objects_model->ReorganizeChildren(from_volume_id, to_volume_id, m_objects_model->GetParent(item)));
 
+        changed_object(m_dragged_data.obj_idx());
     }
-    else if (m_dragged_data.type() & itObject)
-    {
-        int from_obj_id = m_dragged_data.obj_idx();
-        int to_obj_id   = item.IsOk() ? m_objects_model->GetIdByItem(item) : ((int)m_objects->size()-1);
-        int delta = to_obj_id < from_obj_id ? -1 : 1;
-
-        int cnt = 0;
-        for (int id = from_obj_id; cnt < abs(from_obj_id - to_obj_id); id += delta, cnt++)
-            std::swap((*m_objects)[id], (*m_objects)[id + delta]);
-
-        select_item(m_objects_model->ReorganizeObjects(from_obj_id, to_obj_id));
-    }
-
-    changed_object(m_dragged_data.obj_idx());
-#endif
 
     m_dragged_data.clear();
 
@@ -2059,6 +2109,10 @@ static TriangleMesh create_mesh(const std::string& type_name, const BoundingBoxf
         mesh = TriangleMesh(its_make_cube(bb.size().x() * 1.5, bb.size().y() * 1.5, bb.size().z() * 0.5));
     else if (type_name == "Cone")
         mesh = TriangleMesh(its_make_cone(0.5 * side, side));
+    else if (type_name == "Disc")
+        mesh.ReadSTLFile((Slic3r::resources_dir() + "/model/Disc.stl").c_str(), true, nullptr);
+    else if (type_name == "Torus")
+        mesh.ReadSTLFile((Slic3r::resources_dir() + "/model/torus.stl").c_str(), true, nullptr);
     else if (type_name == "Bambu Cube")
         mesh.ReadSTLFile((Slic3r::resources_dir() + "/model/Bambu_Cube.stl").c_str(), true, nullptr);
     else if (type_name == "Bambu Cube V2")
@@ -5504,6 +5558,22 @@ void ObjectList::ItemValueChanged(wxDataViewEvent &event)
     }
 }
 
+void GUI::ObjectList::OnStartEditing(wxDataViewEvent &event)
+{
+    auto col  = event.GetColumn();
+    auto item = event.GetItem();
+    if (col == colName) {
+        ObjectDataViewModelNode* node = (ObjectDataViewModelNode*)item.GetID();
+        if (node->GetType() & itPlate) {
+            int plate_idx = node->GetPlateIdx();
+            if (plate_idx >= 0) {
+                auto plate = wxGetApp().plater()->get_partplate_list().get_plate(plate_idx);
+                m_objects_model->SetName(from_u8(plate->get_plate_name()), GetSelection());
+            }
+        }
+    }
+}
+
 // Workaround for entering the column editing mode on Windows. Simulate keyboard enter when another column of the active line is selected.
 // Here the last active column is forgotten, so when leaving the editing mode, the next mouse click will not enter the editing mode of the newly selected column.
 void ObjectList::OnEditingStarted(wxDataViewEvent &event)
@@ -5578,6 +5648,17 @@ void ObjectList::OnEditingDone(wxDataViewEvent &event)
 {
     if (event.GetColumn() != colName)
         return;
+
+    if (event.IsEditCancelled()) {
+        if (m_objects_model->GetItemType(event.GetItem()) & itPlate) {
+            int plate_idx = -1;
+            m_objects_model->GetItemType(event.GetItem(), plate_idx);
+            if (plate_idx >= 0) {
+                auto plate = wxGetApp().plater()->get_partplate_list().get_plate(plate_idx);
+                m_objects_model->SetCurSelectedPlateFullName(plate_idx, plate->get_plate_name());
+            }
+        }
+    }
 
     const auto renderer = dynamic_cast<BitmapTextRenderer*>(GetColumn(colName)->GetRenderer());
 #if __WXOSX__

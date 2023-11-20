@@ -7,7 +7,8 @@
 #include "I18N.hpp"
 #include "Layer.hpp"
 #include "MutablePolygon.hpp"
-#include "SupportMaterial.hpp"
+#include "Support/SupportMaterial.hpp"
+#include "Support/TreeSupport.hpp"
 #include "Surface.hpp"
 #include "Slicing.hpp"
 #include "Tesselate.hpp"
@@ -17,7 +18,6 @@
 #include "Fill/FillLightning.hpp"
 #include "Format/STL.hpp"
 #include "InternalBridgeDetector.hpp"
-#include "TreeSupport.hpp"
 
 #include <float.h>
 #include <string_view>
@@ -40,7 +40,6 @@ using namespace std::literals;
 #endif
 
 // #define SLIC3R_DEBUG
-
 // Make assert active if SLIC3R_DEBUG
 #ifdef SLIC3R_DEBUG
     #undef NDEBUG
@@ -427,7 +426,7 @@ void PrintObject::detect_overhangs_for_lift()
         size_t num_layers = this->layer_count();
         size_t num_raft_layers = m_slicing_params.raft_layers();
 
-        m_print->set_status(78, L("Detect overhangs for auto-lift"));
+        m_print->set_status(71, L("Detect overhangs for auto-lift"));
 
         this->clear_overhangs_for_lift();
 
@@ -477,7 +476,7 @@ void PrintObject::generate_support_material()
                     {LargeOverhang,L("large overhangs")} };
                 std::string warning_message = format(L("It seems object %s has %s. Please re-orient the object or enable support generation."),
                     this->model_object()->name, reasons[sntype]);
-                this->active_step_add_warning(PrintStateBase::WarningLevel::CRITICAL, warning_message, PrintStateBase::SlicingNeedSupportOn);
+                this->active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, warning_message, PrintStateBase::SlicingNeedSupportOn);
             }
 
 #if 0
@@ -709,7 +708,8 @@ bool PrintObject::invalidate_state_by_config_options(
             }
         } else if (
                opt_key == "wall_loops"
-            || opt_key == "only_one_wall_top"
+            || opt_key == "top_one_wall_type"
+            || opt_key == "top_area_threshold"
             || opt_key == "only_one_wall_first_layer"
             || opt_key == "initial_layer_line_width"
             || opt_key == "inner_wall_line_width"
@@ -736,6 +736,8 @@ bool PrintObject::invalidate_state_by_config_options(
             steps.emplace_back(posPerimeters);
         } else if (
                opt_key == "layer_height"
+            || opt_key == "mmu_segmented_region_max_width"
+            || opt_key == "mmu_segmented_region_interlocking_depth"
             || opt_key == "raft_layers"
             || opt_key == "raft_contact_distance"
             || opt_key == "slice_closing_radius"
@@ -771,6 +773,7 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_interface_pattern"
             || opt_key == "support_interface_loop_pattern"
             || opt_key == "support_interface_filament"
+            || opt_key == "support_interface_not_for_body"
             || opt_key == "support_interface_spacing"
             || opt_key == "support_bottom_interface_spacing" //BBS
             || opt_key == "support_base_pattern"
@@ -795,7 +798,7 @@ bool PrintObject::invalidate_state_by_config_options(
         } else if (
                opt_key == "bottom_shell_layers"
             || opt_key == "top_shell_layers") {
-            
+
             steps.emplace_back(posPrepareInfill);
 
             const auto *old_shell_layers = old_config.option<ConfigOptionInt>(opt_key);
@@ -807,7 +810,7 @@ bool PrintObject::invalidate_state_by_config_options(
 
             if (value_changed && this->object_extruders().size() > 1) {
                 steps.emplace_back(posSlice);
-            }               
+            }
             else if (m_print->config().spiral_mode && opt_key == "bottom_shell_layers") {
                 // Changing the number of bottom layers when a spiral vase is enabled requires re-slicing the object again.
                 // Otherwise, holes in the bottom layers could be filled, as is reported in GH #5528.
@@ -2460,11 +2463,15 @@ void PrintObject::combine_infill()
 
 void PrintObject::_generate_support_material()
 {
-    PrintObjectSupportMaterial support_material(this, m_slicing_params);
-    support_material.generate(*this);
-
-    TreeSupport tree_support(*this, m_slicing_params);
-    tree_support.generate();
+    if (is_tree(m_config.support_type.value)) {
+        TreeSupport tree_support(*this, m_slicing_params);
+        tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
+        tree_support.generate();
+    }
+    else {
+        PrintObjectSupportMaterial support_material(this, m_slicing_params);
+        support_material.generate(*this);
+    }
 }
 
 // BBS

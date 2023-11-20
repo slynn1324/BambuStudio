@@ -139,7 +139,13 @@ std::string HMSQuery::hms_language_code()
         // set language code to en by default
         return "en";
     std::string lang_code = wxGetApp().app_config->get_language_code();
-    if (lang_code.empty()) {
+    if (lang_code.compare("uk") == 0
+        || lang_code.compare("cs") == 0
+        || lang_code.compare("ru") == 0) {
+        BOOST_LOG_TRIVIAL(info) << "HMS: using english for lang_code = " << lang_code;
+        return "en";
+    }
+    else if (lang_code.empty()) {
         // set language code to en by default
         return "en";
     }
@@ -279,9 +285,22 @@ std::string get_hms_wiki_url(std::string error_code)
     std::string hms_host = wxGetApp().app_config->get_hms_host();
     std::string lang_code = HMSQuery::hms_language_code();
     std::string url = (boost::format("https://%1%/index.php?e=%2%&s=device_hms&lang=%3%")
+        % hms_host
+        % error_code
+        % lang_code).str();
+
+    DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager();
+    if (!dev) return url;
+    MachineObject* obj = dev->get_selected_machine();
+    if (!obj) return url;
+
+    if (!obj->dev_id.empty()) {
+        url = (boost::format("https://%1%/index.php?e=%2%&d=%3%&s=device_hms&lang=%4%")
                        % hms_host
                        % error_code
+                       % obj->dev_id
                        % lang_code).str();
+    }
     return url;
 }
 

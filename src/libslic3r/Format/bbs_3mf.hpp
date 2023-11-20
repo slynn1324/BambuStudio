@@ -14,6 +14,10 @@ class Preset;
 struct FilamentInfo;
 struct ThumbnailData;
 
+
+#define PLATE_THUMBNAIL_SMALL_WIDTH     128
+#define PLATE_THUMBNAIL_SMALL_HEIGHT    128
+
 #define GCODE_FILE_FORMAT               "Metadata/plate_%1%.gcode"
 #define THUMBNAIL_FILE_FORMAT           "Metadata/plate_%1%.png"
 #define TOP_FILE_FORMAT                 "Metadata/top_%1%.png"
@@ -65,6 +69,8 @@ struct PlateData
     int plate_index;
     std::vector<std::pair<int, int>> objects_and_instances;
     std::map<int, std::pair<int, int>> obj_inst_map;
+    std::string     printer_model_id;
+    std::string     nozzle_diameters;
     std::string     gcode_file;
     std::string     gcode_file_md5;
     std::string     thumbnail_file;
@@ -84,6 +90,7 @@ struct PlateData
     bool            is_sliced_valid = false;
     bool            toolpath_outside {false};
     bool            is_label_object_enabled {false};
+    int             timelapse_warning_code = 0; // 1<<0 sprial vase, 1<<1 by object
 
     std::vector<GCodeProcessorResult::SliceWarning> warnings;
 
@@ -226,7 +233,7 @@ extern bool load_bbs_3mf(const char* path, DynamicPrintConfig* config, ConfigSub
 
 extern std::string bbs_3mf_get_thumbnail(const char * path);
 
-extern bool load_gcode_3mf_from_stream(std::istream & data, DynamicPrintConfig* config, Model* model, PlateDataPtrs* plate_data_list, 
+extern bool load_gcode_3mf_from_stream(std::istream & data, DynamicPrintConfig* config, Model* model, PlateDataPtrs* plate_data_list,
        Semver* file_version);
 
 

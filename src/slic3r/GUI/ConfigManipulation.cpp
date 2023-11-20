@@ -108,39 +108,6 @@ void ConfigManipulation::check_nozzle_temperature_initial_layer_range(DynamicPri
     }
 }
 
-void ConfigManipulation::check_bed_temperature_difference(int bed_type, DynamicPrintConfig* config)
-{
-    if (is_msg_dlg_already_exist)
-        return;
-
-    if (config->has("bed_temperature_difference") && config->has("temperature_vitrification")) {
-        int bed_temp_difference = config->opt_int("bed_temperature_difference", 0);
-        int vitrification = config->opt_int("temperature_vitrification", 0);
-        const ConfigOptionInts* bed_temp_1st_layer_opt = config->option<ConfigOptionInts>(get_bed_temp_1st_layer_key((BedType)bed_type));
-        const ConfigOptionInts* bed_temp_opt = config->option<ConfigOptionInts>(get_bed_temp_key((BedType)bed_type));
-
-        if (bed_temp_1st_layer_opt != nullptr && bed_temp_opt != nullptr) {
-            int first_layer_bed_temp = bed_temp_1st_layer_opt->get_at(0);
-            int bed_temp = bed_temp_opt->get_at(0);
-            if (first_layer_bed_temp - bed_temp > bed_temp_difference) {
-                const wxString msg_text = wxString::Format(_L("Bed temperature of other layer is lower than bed temperature of initial layer for more than %d degree centigrade.\nThis may cause model broken free from build plate during printing"), bed_temp_difference);
-                MessageDialog dialog(m_msg_dlg_parent, msg_text, "", wxICON_WARNING | wxOK);
-                is_msg_dlg_already_exist = true;
-                dialog.ShowModal();
-                is_msg_dlg_already_exist = false;
-            }
-
-            if (first_layer_bed_temp > vitrification || bed_temp > vitrification) {
-                const wxString msg_text = wxString::Format(
-                    _L("Bed temperature is higher than vitrification temperature of this filament.\nThis may cause nozzle blocked and printing failure\nPlease keep the printer open during the printing process to ensure air circulation or reduce the temperature of the hot bed"));
-                MessageDialog dialog(m_msg_dlg_parent, msg_text, "", wxICON_WARNING | wxOK);
-                is_msg_dlg_already_exist = true;
-                dialog.ShowModal();
-                is_msg_dlg_already_exist = false;
-            }
-        }
-    }
-}
 
 void ConfigManipulation::check_filament_max_volumetric_speed(DynamicPrintConfig *config)
 {
@@ -160,6 +127,32 @@ void ConfigManipulation::check_filament_max_volumetric_speed(DynamicPrintConfig 
         is_msg_dlg_already_exist = false;
     }
 
+}
+
+void ConfigManipulation::check_chamber_temperature(DynamicPrintConfig* config)
+{
+    const static std::map<std::string, int>recommend_temp_map = {
+        {"PLA",45},
+        {"PLA-CF",45},
+        {"PVA",45},
+        {"TPU",50},
+        {"PETG",55},
+        {"PETG-CF",55}
+    };
+   bool support_chamber_temp_control=GUI::wxGetApp().preset_bundle->printers.get_selected_preset().config.opt_bool("support_chamber_temp_control");
+    if (support_chamber_temp_control&&config->has("chamber_temperatures")) {
+        std::string filament_type = config->option<ConfigOptionStrings>("filament_type")->get_at(0);
+        auto iter = recommend_temp_map.find(filament_type);
+        if (iter!=recommend_temp_map.end()) {
+            if (iter->second < config->option<ConfigOptionInts>("chamber_temperatures")->get_at(0)) {
+                wxString msg_text = wxString::Format(_L("Current chamber temperature is higher than the material's safe temperature,it may result in material softening and clogging.The maximum safe temperature for the material is %d"), iter->second);
+                MessageDialog dialog(m_msg_dlg_parent, msg_text, "", wxICON_WARNING | wxOK);
+                is_msg_dlg_already_exist = true;
+                dialog.ShowModal();
+                is_msg_dlg_already_exist = false;
+            }
+        }
+    }
 }
 
 void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, const bool is_global_config)
@@ -197,6 +190,9 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
         apply(config, &new_conf);
         is_msg_dlg_already_exist = false;
     }
+    //BBS: top_area_threshold showed if the top one wall function be applyed
+    bool top_one_wall_apply = config->opt_enum<TopOneWallType>("top_one_wall_type") == TopOneWallType::None;
+    toggle_line("top_area_threshold", !top_one_wall_apply);
 
     //BBS: ironing_spacing shouldn't be too small or equal to zero
     if (config->opt_float("ironing_spacing") < 0.05)
@@ -282,6 +278,12 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
             config->opt_enum<TimelapseType>("timelapse_type") == TimelapseType::tlTraditional))
     {
         wxString msg_text = _(L("Spiral mode only works when wall loops is 1, support is disabled, top shell layers is 0, sparse infill density is 0 and timelapse type is traditional."));
+
+        auto printer_structure_opt = wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionEnum<PrinterStructure>>("printer_structure");
+        if (printer_structure_opt && printer_structure_opt->value == PrinterStructure::psI3) {
+            msg_text += _(L(" But machines with I3 structure will not generate timelapse videos."));
+        }
+
         if (is_global_config)
             msg_text += "\n\n" + _(L("Change these settings automatically? \n"
                                      "Yes - Change these settings and enable spiral mode automatically\n"
@@ -432,8 +434,8 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
     if (config->opt_bool("enable_support")) {
         auto   support_type = config->opt_enum<SupportType>("support_type");
         auto   support_style = config->opt_enum<SupportMaterialStyle>("support_style");
-        std::set<int> enum_set_normal = {0, 1, 2};
-        std::set<int> enum_set_tree   = {0, 3, 4, 5};
+        std::set<int> enum_set_normal = { smsDefault, smsGrid, smsSnug };
+        std::set<int> enum_set_tree   = { smsDefault, smsTreeSlim, smsTreeStrong, smsTreeHybrid, smsTreeOrganic };
         auto &           set             = is_tree(support_type) ? enum_set_tree : enum_set_normal;
         if (set.find(support_style) == set.end()) {
             DynamicPrintConfig new_conf = *config;
@@ -533,7 +535,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
 {
     bool have_perimeters = config->opt_int("wall_loops") > 0;
     for (auto el : { "ensure_vertical_shell_thickness", "detect_thin_wall", "detect_overhang_wall",
-                    "seam_position","seam_gap","wipe_speed", "wall_infill_order", "outer_wall_line_width",
+                    "seam_position","seam_gap","wipe_speed", "wall_sequence", "outer_wall_line_width",
                     "inner_wall_speed", "outer_wall_speed" })
         toggle_field(el, have_perimeters);
 
@@ -608,7 +610,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
                     "bridge_no_support", "max_bridge_length", "support_top_z_distance", "support_bottom_z_distance",
                      //BBS: add more support params to dependent of enable_support
                     "support_type", "support_on_build_plate_only",
-                    "support_remove_small_overhang",
+                    "support_remove_small_overhang","support_interface_not_for_body",
                     "support_object_xy_distance"/*, "independent_support_layer_height"*/})
         toggle_field(el, have_support_material);
     toggle_field("support_threshold_angle", have_support_material && is_auto(support_type));
@@ -647,7 +649,8 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
         toggle_line(el, have_raft);
 
     bool has_ironing = (config->opt_enum<IroningType>("ironing_type") != IroningType::NoIroning);
-    for (auto el : {"ironing_pattern", "ironing_flow", "ironing_spacing", "ironing_speed"})
+    for (auto el : {
+        "ironing_pattern","ironing_speed", "ironing_flow", "ironing_spacing", "ironing_direction"})
         toggle_line(el, has_ironing);
 
     // bool have_sequential_printing = (config->opt_enum<PrintSequence>("print_sequence") == PrintSequence::ByObject);
@@ -673,6 +676,8 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
 
     toggle_line("flush_into_objects", !is_global_config);
 
+    toggle_line("support_interface_not_for_body",config->opt_int("support_interface_filament")&&!config->opt_int("support_filament"));
+
     bool has_fuzzy_skin = (config->opt_enum<FuzzySkinType>("fuzzy_skin") != FuzzySkinType::None);
     for (auto el : { "fuzzy_skin_thickness", "fuzzy_skin_point_distance"})
         toggle_line(el, has_fuzzy_skin);
@@ -682,8 +687,6 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
         "min_feature_size", "min_bead_width", "wall_distribution_count" })
         toggle_line(el, have_arachne);
     toggle_field("detect_thin_wall", !have_arachne);
-    //toggle_field("enable_overhang_speed", !have_arachne);
-    toggle_field("only_one_wall_top", !have_arachne);
 
     PresetBundle *preset_bundle = wxGetApp().preset_bundle;
     // OrcaSlicer

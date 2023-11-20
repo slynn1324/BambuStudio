@@ -50,16 +50,16 @@ CalibrationDialog::CalibrationDialog(Plater *plater)
 
     select_xcam_cali    = create_check_option(_L("Micro lidar calibration"), cali_left_panel, _L("Micro lidar calibration"),            "xcam_cali");
     select_bed_leveling = create_check_option(_L("Bed leveling"),            cali_left_panel, _L("Bed leveling"),                       "bed_leveling");
-    select_vibration    = create_check_option(_L("Resonance frequency identification"), cali_left_panel, _L("Resonance frequency identification"), "vibration");
+    select_vibration    = create_check_option(_L("Vibration compensation"), cali_left_panel, _L("Vibration compensation"), "vibration");
+    select_motor_noise  = create_check_option(_L("Motor noise cancellation"), cali_left_panel, _L("Motor noise cancellation"), "motor_noise");
 
-    m_checkbox_list["xcam_cali"]->SetValue(true);
-    m_checkbox_list["bed_leveling"]->SetValue(true);
-    m_checkbox_list["vibration"]->SetValue(true);
+    
 
     cali_left_sizer->Add(0, FromDIP(18), 0, wxEXPAND, 0);
     cali_left_sizer->Add(select_xcam_cali, 0, wxLEFT, FromDIP(15));
     cali_left_sizer->Add(select_bed_leveling, 0, wxLEFT, FromDIP(15));
     cali_left_sizer->Add(select_vibration, 0, wxLEFT, FromDIP(15));
+    cali_left_sizer->Add(select_motor_noise, 0, wxLEFT, FromDIP(15));
     cali_left_sizer->Add(0, FromDIP(30), 0, wxEXPAND, 0);
 
     auto cali_left_text_top = new wxStaticText(cali_left_panel, wxID_ANY, _L("Calibration program"), wxDefaultPosition, wxDefaultSize, 0);
@@ -208,18 +208,34 @@ wxWindow* CalibrationDialog::create_check_option(wxString title, wxWindow* paren
 
     text->Bind(wxEVT_LEFT_DOWN, [this, check](wxMouseEvent&) { check->SetValue(check->GetValue() ? false : true); });
     m_checkbox_list[param] = check;
+    m_checkbox_list[param]->SetValue(true);
     return checkbox;
 }
 
 void CalibrationDialog::update_cali(MachineObject *obj)
 {
     if (!obj) return;
-    if (obj->is_function_supported(PrinterFunction::FUNC_AI_MONITORING)
-        && obj->is_function_supported(PrinterFunction::FUNC_LIDAR_CALIBRATION)) {
+    if (obj->is_support_ai_monitoring && obj->is_support_lidar_calibration) {
         select_xcam_cali->Show();
     } else {
         select_xcam_cali->Hide();
+        m_checkbox_list["xcam_cali"]->SetValue(false);
     }
+    
+    if(obj->is_support_auto_leveling){
+        select_bed_leveling->Show();
+    }else{
+        select_bed_leveling->Hide();
+        m_checkbox_list["bed_leveling"]->SetValue(false);
+    }
+
+    if (obj->is_support_motor_noise_cali) {
+        select_motor_noise->Show();
+    } else {
+        select_motor_noise->Hide();
+        m_checkbox_list["motor_noise"]->SetValue(false);
+    }
+
 
     if (obj->is_calibration_running() || obj->is_calibration_done()) {
         if (obj->is_calibration_done()) {
@@ -257,6 +273,14 @@ void CalibrationDialog::update_cali(MachineObject *obj)
         m_calibration_flow->DeleteAllItems();
         m_calibration_btn->SetLabel(_L("Start Calibration"));
     }
+    if (!obj->is_calibration_running() && !m_checkbox_list["vibration"]->GetValue() && !m_checkbox_list["bed_leveling"]->GetValue() &&
+        !m_checkbox_list["xcam_cali"]->GetValue() && !m_checkbox_list["motor_noise"]->GetValue()) {
+        m_calibration_btn->Disable();
+        m_calibration_btn->SetLabel(_L("No step selected"));
+    }
+    else if(!obj->is_calibration_running()){
+        m_calibration_btn->Enable();
+    }
 }
 
 bool CalibrationDialog::is_stage_list_info_changed(MachineObject *obj)
@@ -284,7 +308,8 @@ void CalibrationDialog::on_start_calibration(wxMouseEvent &event)
             m_obj->command_start_calibration(
                 m_checkbox_list["vibration"]->GetValue(),
                 m_checkbox_list["bed_leveling"]->GetValue(),
-                m_checkbox_list["xcam_cali"]->GetValue()
+                m_checkbox_list["xcam_cali"]->GetValue(),
+                m_checkbox_list["motor_noise"]->GetValue()
                 );
         }
     }

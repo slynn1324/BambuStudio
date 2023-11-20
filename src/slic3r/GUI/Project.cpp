@@ -43,7 +43,7 @@ const std::vector<std::string> license_list = {
 ProjectPanel::ProjectPanel(wxWindow *parent, wxWindowID id, const wxPoint &pos, const wxSize &size, long style) : wxPanel(parent, id, pos, size, style)
 {
     m_project_home_url = wxString::Format("file://%s/web/model/index.html", from_u8(resources_dir()));
-    std::string strlang = wxGetApp().app_config->get("language");
+    wxString strlang = wxGetApp().current_language_code_safe();
     if (strlang != "")
         m_project_home_url = wxString::Format("file://%s/web/model/index.html?lang=%s", from_u8(resources_dir()), strlang);
 
@@ -58,6 +58,7 @@ ProjectPanel::ProjectPanel(wxWindow *parent, wxWindowID id, const wxPoint &pos, 
     main_sizer->Add(m_browser, wxSizerFlags().Expand().Proportion(1));
     m_browser->Bind(wxEVT_WEBVIEW_NAVIGATED, &ProjectPanel::on_navigated, this);
     m_browser->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &ProjectPanel::OnScriptMessage, this, m_browser->GetId());
+    Bind(wxEVT_WEBVIEW_NAVIGATING, &ProjectPanel::onWebNavigating, this, m_browser->GetId());
 
     Bind(EVT_PROJECT_RELOAD, &ProjectPanel::on_reload, this);
 
@@ -67,6 +68,19 @@ ProjectPanel::ProjectPanel(wxWindow *parent, wxWindowID id, const wxPoint &pos, 
 }
 
 ProjectPanel::~ProjectPanel() {}
+
+
+void ProjectPanel::onWebNavigating(wxWebViewEvent& evt)
+{
+    wxString tmpUrl = evt.GetURL();
+    //wxString NowUrl = m_browser->GetCurrentURL();
+
+    if (boost::starts_with(tmpUrl, "http://") || boost::starts_with(tmpUrl, "https://")) {
+        m_browser->Stop();
+        evt.Veto();
+        wxLaunchDefaultApplication(tmpUrl);
+    }
+}
 
 void ProjectPanel::on_reload(wxCommandEvent& evt)
 {
@@ -310,11 +324,18 @@ std::map<std::string, std::vector<json>> ProjectPanel::Reload(wxString aux_path)
                     pfile_obj["filename"] = wxGetApp().url_encode(file_path_obj.filename().string().c_str());
                     pfile_obj["size"] = formatBytes((unsigned long)filelen);
 
+                    std::string file_extension = file_path_obj.extension().string();
+                    boost::algorithm::to_lower(file_extension);
+
                     //image
-                    if (file_path_obj.extension() == ".jpg" ||
-                        file_path_obj.extension() == ".jpeg" ||
-                        file_path_obj.extension() == ".png" ||
-                        file_path_obj.extension() == ".bmp")
+                    if (file_extension == ".jpg"    ||
+                        file_extension == ".jpeg"   ||
+                        file_extension == ".pjpeg"  ||
+                        file_extension == ".png"    ||
+                        file_extension == ".jfif"   ||
+                        file_extension == ".pjp"    ||
+                        file_extension == ".webp"   ||
+                        file_extension == ".bmp")
                     {
 
                         wxString base64_str = to_base64(file_path);
@@ -343,25 +364,30 @@ std::string ProjectPanel::formatBytes(unsigned long bytes)
 
 wxString ProjectPanel::to_base64(std::string file_path) 
 {
-    std::map<std::string, wxBitmapType> base64_format;
-    base64_format[".jpg"] = wxBITMAP_TYPE_JPEG;
-    base64_format[".jpeg"] = wxBITMAP_TYPE_JPEG;
-    base64_format[".png"] = wxBITMAP_TYPE_PNG;
-    base64_format[".bmp"] = wxBITMAP_TYPE_BMP;
 
-    std::string extension = file_path.substr(file_path.rfind("."), file_path.length());
+    std::ifstream imageFile(encode_path(file_path.c_str()), std::ios::binary);
+    if (!imageFile) {
+        return wxEmptyString;
+    }
 
-    auto image = new wxImage(encode_path(file_path.c_str()));
-    wxMemoryOutputStream mem;
-    image->SaveFile(mem, base64_format[extension]);
+    std::ostringstream imageStream;
+    imageStream << imageFile.rdbuf();
 
-    wxString km = wxBase64Encode(mem.GetOutputStreamBuffer()->GetBufferStart(),
-        mem.GetSize());
+    std::string binaryImageData = imageStream.str();
+
+    std::string extension;
+    size_t last_dot = file_path.find_last_of(".");
+   
+    if (last_dot != std::string::npos) {
+        extension = file_path.substr(last_dot + 1);
+    }
+
+    wxString bease64_head = wxString::Format("data:image/%s;base64,", extension);
+
 
     std::wstringstream wss;
-    wss << L"data:image/jpg;base64,";
-    //wss << wxBase64Encode(km.data(), km.size());
-    wss << km;
+    wss << bease64_head;
+    wss << wxBase64Encode(binaryImageData.data(), binaryImageData.size());
 
     wxString base64_str = wss.str();
     return  base64_str;

@@ -15,6 +15,7 @@ namespace GUI {
 #define HISTORY_WINDOW_SIZE                wxSize(FromDIP(700), FromDIP(600))
 #define EDIT_HISTORY_DIALOG_INPUT_SIZE     wxSize(FromDIP(160), FromDIP(24))
 #define HISTORY_WINDOW_ITEMS_COUNT         5
+static const wxString k_tips = "Please input a valid value (K in 0~0.3)";
 
 static wxString get_preset_name_by_filament_id(std::string filament_id)
 {
@@ -124,16 +125,16 @@ void HistoryWindow::sync_history_result(MachineObject* obj)
     if (obj)
         m_calib_results_history = obj->pa_calib_tab;
 
-    sync_history_data();
-
     if (m_calib_results_history.empty()) {
         m_tips->SetLabel(_L("No History Result"));
+        return;
     }
     else {
-        m_tips->SetLabel("Success to get history result");
+        m_tips->SetLabel(_L("Success to get history result"));
     }
     m_tips->Refresh();
 
+    sync_history_data();
 }
 
 void HistoryWindow::on_device_connected(MachineObject* obj)
@@ -191,14 +192,26 @@ void HistoryWindow::on_select_nozzle(wxCommandEvent& evt)
 void HistoryWindow::reqeust_history_result(MachineObject* obj)
 {
     if (curr_obj) {
+        // reset 
         curr_obj->reset_pa_cali_history_result();
-        sync_history_result(curr_obj);
+        m_calib_results_history.clear();
+        sync_history_data();
 
         float nozzle_value = get_nozzle_value();
         if (nozzle_value > 0) {
             CalibUtils::emit_get_PA_calib_infos(nozzle_value);
-            m_tips->SetLabel("Refreshing the historical Flow Dynamics Calibration records");
+            m_tips->SetLabel(_L("Refreshing the historical Flow Dynamics Calibration records"));
             BOOST_LOG_TRIVIAL(info) << "request calib history";
+        }
+    }
+}
+
+void HistoryWindow::enbale_action_buttons(bool enable) {
+    auto childern = m_history_data_panel->GetChildren();
+    for (auto child : childern) {
+        auto button = dynamic_cast<Button*>(child);
+        if (button) {
+            button->Enable(enable);
         }
     }
 }
@@ -206,6 +219,7 @@ void HistoryWindow::reqeust_history_result(MachineObject* obj)
 void HistoryWindow::sync_history_data() {
     Freeze();
     m_history_data_panel->DestroyChildren();
+    m_history_data_panel->Enable();
     wxGridBagSizer* gbSizer;
     gbSizer = new wxGridBagSizer(FromDIP(0), FromDIP(50));
     gbSizer->SetFlexibleDirection(wxBOTH);
@@ -271,20 +285,22 @@ void HistoryWindow::sync_history_data() {
         edit_button->SetTextColor(wxColour("#FFFFFE"));
         edit_button->SetMinSize(wxSize(-1, FromDIP(24)));
         edit_button->SetCornerRadius(FromDIP(12));
-        edit_button->Bind(wxEVT_BUTTON, [this, &result, k_value, name_value](auto& e) {
+        edit_button->Bind(wxEVT_BUTTON, [this, result, k_value, name_value, edit_button](auto& e) {
             PACalibResult result_buffer = result;
             result_buffer.k_value = stof(k_value->GetLabel().ToStdString());
-            result_buffer.name = name_value->GetLabel().ToStdString();
+            result_buffer.name = name_value->GetLabel().ToUTF8().data();
             EditCalibrationHistoryDialog dlg(this, result_buffer);
             if (dlg.ShowModal() == wxID_OK) {
                 auto new_result = dlg.get_result();
 
                 wxString new_k_str = wxString::Format("%.3f", new_result.k_value);
                 k_value->SetLabel(new_k_str);
-                name_value->SetLabel(new_result.name);
+                name_value->SetLabel(from_u8(new_result.name));
 
                 new_result.tray_id = -1;
-                CalibUtils::set_PA_calib_result({ new_result });
+                CalibUtils::set_PA_calib_result({ new_result }, true);
+
+                enbale_action_buttons(false);
             }
             });
 
@@ -336,14 +352,14 @@ EditCalibrationHistoryDialog::EditCalibrationHistoryDialog(wxWindow* parent, con
     flex_sizer->SetNonFlexibleGrowMode(wxFLEX_GROWMODE_SPECIFIED);
 
     Label* name_title = new Label(top_panel, _L("Name"));
-    TextInput* name_value = new TextInput(top_panel, m_new_result.name, "", "", wxDefaultPosition, EDIT_HISTORY_DIALOG_INPUT_SIZE, wxTE_PROCESS_ENTER);
+    TextInput* name_value = new TextInput(top_panel, from_u8(m_new_result.name), "", "", wxDefaultPosition, EDIT_HISTORY_DIALOG_INPUT_SIZE, wxTE_PROCESS_ENTER);
     name_value->GetTextCtrl()->Bind(wxEVT_TEXT_ENTER, [this, name_value](auto& e) {
         if (!name_value->GetTextCtrl()->GetValue().IsEmpty())
-            m_new_result.name = name_value->GetTextCtrl()->GetValue().ToStdString();
+            m_new_result.name = name_value->GetTextCtrl()->GetValue().ToUTF8().data();
         });
     name_value->GetTextCtrl()->Bind(wxEVT_KILL_FOCUS, [this, name_value](auto& e) {
         if (!name_value->GetTextCtrl()->GetValue().IsEmpty())
-            m_new_result.name = name_value->GetTextCtrl()->GetValue().ToStdString();
+            m_new_result.name = name_value->GetTextCtrl()->GetValue().ToUTF8().data();
         e.Skip();
         });
     flex_sizer->Add(name_title);
@@ -361,22 +377,26 @@ EditCalibrationHistoryDialog::EditCalibrationHistoryDialog(wxWindow* parent, con
     k_value->GetTextCtrl()->Bind(wxEVT_TEXT_ENTER, [this, k_value](auto& e) {
         float k = 0.0f;
         if (!CalibUtils::validate_input_k_value(k_value->GetTextCtrl()->GetValue(), &k)) {
-            MessageDialog msg_dlg(nullptr, _L("Please input a valid value (K in 0~0.5)"), wxEmptyString, wxICON_WARNING | wxOK);
+            MessageDialog msg_dlg(nullptr, _L(k_tips), wxEmptyString, wxICON_WARNING | wxOK);
             msg_dlg.ShowModal();
         }
-        wxString k_str = wxString::Format("%.3f", k);
-        k_value->GetTextCtrl()->SetValue(k_str);
-        m_new_result.k_value = k;
+        else {
+            wxString k_str = wxString::Format("%.3f", k);
+            k_value->GetTextCtrl()->SetValue(k_str);
+            m_new_result.k_value = k;
+        }
         });
     k_value->GetTextCtrl()->Bind(wxEVT_KILL_FOCUS, [this, k_value](auto& e) {
         float k = 0.0f;
         if (!CalibUtils::validate_input_k_value(k_value->GetTextCtrl()->GetValue(), &k)) {
-            MessageDialog msg_dlg(nullptr, _L("Please input a valid value (K in 0~0.5)"), wxEmptyString, wxICON_WARNING | wxOK);
+            MessageDialog msg_dlg(nullptr, _L(k_tips), wxEmptyString, wxICON_WARNING | wxOK);
             msg_dlg.ShowModal();
         }
-        wxString k_str = wxString::Format("%.3f", k);
-        k_value->GetTextCtrl()->SetValue(k_str);
-        m_new_result.k_value = k;
+        else {
+            wxString k_str = wxString::Format("%.3f", k);
+            k_value->GetTextCtrl()->SetValue(k_str);
+            m_new_result.k_value = k;
+        }
         e.Skip();
         });
     flex_sizer->Add(k_title);

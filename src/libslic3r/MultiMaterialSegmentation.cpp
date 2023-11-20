@@ -1372,18 +1372,23 @@ static void remove_multiple_edges_in_vertices(MMU_Graph &graph, const std::vecto
 static void cut_segmented_layers(const std::vector<ExPolygons>        &input_expolygons,
                                  std::vector<std::vector<ExPolygons>> &segmented_regions,
                                  const float                           cut_width,
+                                 const float                           interlocking_depth,
                                  const std::function<void()>          &throw_on_cancel_callback)
 {
     BOOST_LOG_TRIVIAL(debug) << "MMU segmentation - cutting segmented layers in parallel - begin";
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, segmented_regions.size()),[&segmented_regions, &input_expolygons, &cut_width, &throw_on_cancel_callback](const tbb::blocked_range<size_t>& range) {
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, segmented_regions.size()),
+                      [&segmented_regions, &input_expolygons, &cut_width, &interlocking_depth, &throw_on_cancel_callback](const tbb::blocked_range<size_t> &range) {
         for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++layer_idx) {
             throw_on_cancel_callback();
-            const size_t            num_extruders_plus_one = segmented_regions[layer_idx].size();
-            std::vector<ExPolygons> segmented_regions_cuts(num_extruders_plus_one); // Indexed by extruder_id
-            for (size_t extruder_idx = 0; extruder_idx < num_extruders_plus_one; ++extruder_idx)
-                if (const ExPolygons &ex_polygons = segmented_regions[layer_idx][extruder_idx]; !ex_polygons.empty())
-                    segmented_regions_cuts[extruder_idx] = diff_ex(ex_polygons, offset_ex(input_expolygons[layer_idx], cut_width));
-            segmented_regions[layer_idx] = std::move(segmented_regions_cuts);
+            const float  region_cut_width = ((layer_idx % 2 == 0) && (interlocking_depth != 0.f)) ? interlocking_depth : cut_width;
+            const size_t num_extruders_plus_one = segmented_regions[layer_idx].size();
+            if (region_cut_width > 0.f) {
+                std::vector<ExPolygons> segmented_regions_cuts(num_extruders_plus_one); // Indexed by extruder_id
+                for (size_t extruder_idx = 0; extruder_idx < num_extruders_plus_one; ++extruder_idx)
+                    if (const ExPolygons &ex_polygons = segmented_regions[layer_idx][extruder_idx]; !ex_polygons.empty())
+                        segmented_regions_cuts[extruder_idx] = diff_ex(ex_polygons, offset_ex(input_expolygons[layer_idx], -region_cut_width));
+                segmented_regions[layer_idx] = std::move(segmented_regions_cuts);
+            }
         }
     }); // end of parallel_for
     BOOST_LOG_TRIVIAL(debug) << "MMU segmentation - cutting segmented layers in parallel - end";
@@ -1545,7 +1550,9 @@ static inline std::vector<std::vector<ExPolygons>> mmu_segmentation_top_and_bott
         //BBS: spacing according to width and layer height
         float   extrusion_spacing{ 0.f };
     };
-    auto layer_color_stat = [&layers = std::as_const(layers)](const size_t layer_idx, const size_t color_idx) -> LayerColorStat {
+    PrintConfig print_config = print_object.print()->config();
+    float default_line_width = float(print_object.config().line_width.value);
+    auto layer_color_stat = [&layers = std::as_const(layers), print_config, default_line_width](const size_t layer_idx, const size_t color_idx) -> LayerColorStat {
         LayerColorStat out;
         const Layer &layer = *layers[layer_idx];
         for (const LayerRegion *region : layer.regions())
@@ -1554,16 +1561,18 @@ static inline std::vector<std::vector<ExPolygons>> mmu_segmentation_top_and_bott
                 // As this region may split existing regions, we collect statistics over all regions for color_idx == 0.
                 color_idx == 0 || config.wall_filament == int(color_idx)) {
                 //BBS: the extrusion line width is outer wall rather than inner wall
-                out.extrusion_width     = std::max<float>(out.extrusion_width, float(config.outer_wall_line_width));
+                float nozzle_diamter = float(print_config.nozzle_diameter.get_at(config.wall_filament - 1));
+                float outer_wall_line_width = float(config.outer_wall_line_width) == 0.0 ? (default_line_width == 0.0 ? nozzle_diamter : default_line_width) : float(config.outer_wall_line_width.value);
+                out.extrusion_width     = std::max<float>(out.extrusion_width, outer_wall_line_width);
                 out.top_shell_layers    = std::max<int>(out.top_shell_layers, config.top_shell_layers);
                 out.bottom_shell_layers = std::max<int>(out.bottom_shell_layers, config.bottom_shell_layers);
                 out.small_region_threshold = config.gap_infill_speed.value > 0 ?
                                              // Gap fill enabled. Enable a single line of 1/2 extrusion width.
-                                             0.5f * float(config.outer_wall_line_width) :
+                                             0.5f * outer_wall_line_width :
                                              // Gap fill disabled. Enable two lines slightly overlapping.
-                                             float(config.outer_wall_line_width) + 0.7f * Flow::rounded_rectangle_extrusion_spacing(float(config.outer_wall_line_width), float(layer.height));
+                                             outer_wall_line_width + 0.7f * Flow::rounded_rectangle_extrusion_spacing(outer_wall_line_width, float(layer.height));
                 out.small_region_threshold = scaled<float>(out.small_region_threshold * 0.5f);
-                out.extrusion_spacing = Flow::rounded_rectangle_extrusion_spacing(float(config.outer_wall_line_width), float(layer.height));
+                out.extrusion_spacing = Flow::rounded_rectangle_extrusion_spacing(outer_wall_line_width, float(layer.height));
                 ++ out.num_regions;
             }
         assert(out.num_regions > 0);
@@ -1662,9 +1671,12 @@ static inline std::vector<std::vector<ExPolygons>> mmu_segmentation_top_and_bott
                 self = union_ex(self);
             }
             // Trim one region by the other if some of the regions overlap.
-            for (size_t color_idx = 1; color_idx < triangles_by_color_merged.size(); ++ color_idx)
-                triangles_by_color_merged[color_idx][layer_idx] = diff_ex(triangles_by_color_merged[color_idx][layer_idx],
-                                                                          triangles_by_color_merged[color_idx - 1][layer_idx]);
+            ExPolygons painted_regions;
+            for (size_t color_idx = 1; color_idx < triangles_by_color_merged.size(); ++color_idx) {
+                triangles_by_color_merged[color_idx][layer_idx] = diff_ex(triangles_by_color_merged[color_idx][layer_idx], painted_regions);
+                append(painted_regions, triangles_by_color_merged[color_idx][layer_idx]);
+            }
+            triangles_by_color_merged[0][layer_idx] = diff_ex(triangles_by_color_merged[0][layer_idx], painted_regions);
         }
     });
 
@@ -2037,10 +2049,10 @@ std::vector<std::vector<ExPolygons>> multi_material_segmentation_by_painting(con
     BOOST_LOG_TRIVIAL(debug) << "MMU segmentation - layers segmentation in parallel - end";
     throw_on_cancel_callback();
 
-    //if (auto w = print_object.config().mmu_segmented_region_max_width; w > 0.f) {
-    //    cut_segmented_layers(input_expolygons, segmented_regions, float(-scale_(w)), throw_on_cancel_callback);
-    //    throw_on_cancel_callback();
-    //}
+    if (auto max_width = print_object.config().mmu_segmented_region_max_width, interlocking_depth = print_object.config().mmu_segmented_region_interlocking_depth; max_width > 0.f || interlocking_depth > 0.f) {
+        cut_segmented_layers(input_expolygons, segmented_regions, float(scale_(max_width)), float(scale_(interlocking_depth)), throw_on_cancel_callback);
+        throw_on_cancel_callback();
+    }
 
     // The first index is extruder number (includes default extruder), and the second one is layer number
     std::vector<std::vector<ExPolygons>> top_and_bottom_layers = mmu_segmentation_top_and_bottom_layers(print_object, input_expolygons, throw_on_cancel_callback);

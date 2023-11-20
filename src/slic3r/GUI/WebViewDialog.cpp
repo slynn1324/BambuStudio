@@ -10,6 +10,7 @@
 #include <wx/sizer.h>
 #include <wx/toolbar.h>
 #include <wx/textdlg.h>
+#include <wx/url.h>
 
 #include <slic3r/GUI/Widgets/WebView.hpp>
 
@@ -33,7 +34,7 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
         : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize)
  {
     wxString url = wxString::Format("file://%s/web/homepage/index.html", from_u8(resources_dir()));
-    std::string strlang = wxGetApp().app_config->get("language");
+    wxString strlang = wxGetApp().current_language_code_safe();
     if (strlang != "")
         url = wxString::Format("file://%s/web/homepage/index.html?lang=%s", from_u8(resources_dir()), strlang);
 
@@ -452,8 +453,17 @@ void WebViewPanel::SendDesignStaffpick(bool on)
 void WebViewPanel::OpenModelDetail(std::string id, NetworkAgent *agent)
 {
     std::string url;
-    if ((agent ? agent->get_model_mall_detail_url(&url, id) : get_model_mall_detail_url(&url, id)) == 0)
-        wxLaunchDefaultBrowser(url);
+    if ((agent ? agent->get_model_mall_detail_url(&url, id) : get_model_mall_detail_url(&url, id)) == 0) 
+    {
+        if (url.find("?") != std::string::npos) 
+        { 
+            url += "&from=bambustudio";
+        } else {
+            url += "?from=bambustudio";
+        }
+        
+        wxLaunchDefaultBrowser(url); 
+    }
 }
 
 void WebViewPanel::SendLoginInfo()
@@ -496,7 +506,7 @@ void WebViewPanel::get_design_staffpick(int offset, int limit, std::function<voi
         .header("Content-Type", "application/json")
         .on_complete([this, callback](std::string body, unsigned status) { callback(body); })
         .on_error([this, callback](std::string body, std::string error, unsigned status) {
-            callback(body);
+            callback(body + error);
         })
         .perform();
 }
@@ -505,7 +515,7 @@ int WebViewPanel::get_model_mall_detail_url(std::string *url, std::string id)
 {
     // https://makerhub-qa.bambu-lab.com/en/models/2077
     std::string h = wxGetApp().get_model_http_url(wxGetApp().app_config->get_country_code());
-    auto l = wxGetApp().app_config->get("language");
+    auto l = wxGetApp().current_language_code_safe();
     if (auto n = l.find('_'); n != std::string::npos)
         l = l.substr(0, n);
     *url = (boost::format("%1%%2%/models/%3%") % h % l % id).str();
@@ -528,6 +538,12 @@ void WebViewPanel::OnNavigationRequest(wxWebViewEvent& evt)
     const wxString &url = evt.GetURL();
     if (url.StartsWith("File://") || url.StartsWith("file://")) {
         if (!url.Contains("/web/homepage/index.html")) {
+            auto file = wxURL::Unescape(wxURL(url).GetPath());
+#ifdef _WIN32
+            if (file.StartsWith('/'))
+                file = file.Mid(1);
+#endif
+            wxGetApp().plater()->load_files(wxArrayString{1, &file});
             evt.Veto();
             return;
         }
